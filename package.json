@@ -5,8 +5,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "build": "mkdir -p public/dist && cp -r public/js public/dist/ && cp -r public/assets public/dist/ && cp public/index.html public/dist/",
-    "clean": "rm -rf public/dist",
+    "build": "mkdir -p dist && cp -r public/js dist/ && cp -r public/assets dist/ && cp public/index.html dist/ && cp -r images dist/",
+    "clean": "rm -rf dist",
     "prebuild": "npm run clean",
     "postinstall": "npm run build"
   },
