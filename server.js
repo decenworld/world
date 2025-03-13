@@ -1,12 +1,14 @@
 const express = require('express');
 const http = require('http');
-const socketIO = require('socket.io');
+const WebSocket = require('ws');
 const path = require('path');
 
 // Create the Express app
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server);
+
+// Create WebSocket server
+const wss = new WebSocket.Server({ server });
 
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
@@ -14,214 +16,207 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Serve static files from the images directory
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
-// Store player information
-const players = {};
+// Store player information and their WebSocket connections
+const players = new Map();
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  console.log('A user connected:', socket.id);
-  
-  // Debug: Log all current players in the players object
-  console.log('Current players in players object at connection time:', Object.keys(players));
-  console.log('Active socket connections:', Array.from(io.sockets.sockets.keys()));
-  
-  // Send the player their ID
-  socket.emit('playerID', { id: socket.id });
-  
-  // Handle player information
-  socket.on('player_info', (data) => {
-    console.log('Received player info:', data);
+// WebSocket connection handling
+wss.on('connection', (ws) => {
+    const playerId = Math.random().toString(36).substr(2, 9);
+    console.log('A user connected:', playerId);
     
-    // Store player info
-    players[socket.id] = {
-      id: socket.id,
-      username: data.username,
-      x: data.x || 400,
-      y: data.y || 300,
-      health: 10,
-      direction: 'down',
-      state: 'idle'
-    };
+    // Store the WebSocket connection
+    ws.playerId = playerId;
     
-    console.log(`Player ${socket.id} registered with username ${data.username}`);
+    // Send the player their ID
+    ws.send(JSON.stringify({
+        type: 'playerID',
+        data: { id: playerId }
+    }));
     
-    // First, send all existing players to the new player
-    const existingPlayers = Object.values(players).filter(player => player.id !== socket.id);
-    
-    if (existingPlayers.length > 0) {
-      console.log(`Sending ${existingPlayers.length} existing players to new player ${socket.id}`);
-      
-      // Send all existing players at once
-      socket.emit('syncPlayers', {
-        players: existingPlayers
-      });
-    }
-    
-    // Then, after a short delay, broadcast the new player to all other clients
-    setTimeout(() => {
-      console.log(`Broadcasting new player ${socket.id} to all clients`);
-      io.emit('playerJoined', players[socket.id]);
-    }, 100);
-  });
-  
-  // Handle request for all players
-  socket.on('getAllPlayers', () => {
-    console.log(`Player ${socket.id} requested all players`);
-    
-    // Send all current players to the requesting client
-    const currentPlayers = Object.values(players).filter(player => 
-      player.id !== socket.id && io.sockets.sockets.get(player.id)
-    );
-    
-    socket.emit('syncPlayers', {
-      players: currentPlayers
+    // Handle messages from clients
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            
+            switch(data.type) {
+                case 'player_info':
+                    // Store player info
+                    players.set(playerId, {
+                        id: playerId,
+                        username: data.data.username,
+                        x: data.data.x || 400,
+                        y: data.data.y || 300,
+                        health: 10,
+                        direction: 'down',
+                        state: 'idle',
+                        ws: ws
+                    });
+                    
+                    // Send existing players to new player
+                    const existingPlayers = Array.from(players.entries())
+                        .filter(([id]) => id !== playerId)
+                        .map(([_, player]) => ({
+                            id: player.id,
+                            username: player.username,
+                            x: player.x,
+                            y: player.y,
+                            health: player.health,
+                            direction: player.direction,
+                            state: player.state
+                        }));
+                    
+                    ws.send(JSON.stringify({
+                        type: 'syncPlayers',
+                        data: { players: existingPlayers }
+                    }));
+                    
+                    // Broadcast new player to others
+                    const playerData = players.get(playerId);
+                    broadcast({
+                        type: 'playerJoined',
+                        data: {
+                            id: playerData.id,
+                            username: playerData.username,
+                            x: playerData.x,
+                            y: playerData.y,
+                            health: playerData.health,
+                            direction: playerData.direction,
+                            state: playerData.state
+                        }
+                    }, ws);
+                    break;
+                
+                case 'getAllPlayers':
+                    const currentPlayers = Array.from(players.entries())
+                        .filter(([id]) => id !== playerId)
+                        .map(([_, player]) => ({
+                            id: player.id,
+                            username: player.username,
+                            x: player.x,
+                            y: player.y,
+                            health: player.health,
+                            direction: player.direction,
+                            state: player.state
+                        }));
+                    
+                    ws.send(JSON.stringify({
+                        type: 'syncPlayers',
+                        data: { players: currentPlayers }
+                    }));
+                    break;
+                
+                case 'playerMove':
+                    const player = players.get(playerId);
+                    if (player) {
+                        player.x = data.data.x;
+                        player.y = data.data.y;
+                        player.direction = data.data.direction;
+                        player.state = data.data.state;
+                        
+                        broadcastToAll({
+                            type: 'playerMoved',
+                            data: {
+                                id: playerId,
+                                x: data.data.x,
+                                y: data.data.y,
+                                direction: data.data.direction,
+                                state: data.data.state
+                            }
+                        });
+                    }
+                    break;
+                
+                case 'playerShoot':
+                    broadcast({
+                        type: 'bulletCreated',
+                        data: {
+                            id: playerId,
+                            x: data.data.x,
+                            y: data.data.y,
+                            direction: data.data.direction,
+                            bulletId: data.data.bulletId
+                        }
+                    }, ws);
+                    break;
+                
+                case 'bulletHit':
+                    const targetPlayer = players.get(data.data.targetId);
+                    if (targetPlayer) {
+                        targetPlayer.health = Math.max(0, targetPlayer.health - 1);
+                        
+                        broadcastToAll({
+                            type: 'playerHit',
+                            data: {
+                                id: data.data.targetId,
+                                health: targetPlayer.health,
+                                bulletId: data.data.bulletId
+                            }
+                        });
+                        
+                        if (targetPlayer.health <= 0) {
+                            targetPlayer.health = 10;
+                            broadcastToAll({
+                                type: 'playerDied',
+                                data: { id: data.data.targetId }
+                            });
+                        }
+                    }
+                    break;
+                
+                case 'playerStateUpdate':
+                    const playerState = players.get(playerId);
+                    if (playerState) {
+                        playerState.state = data.data.state;
+                        broadcast({
+                            type: 'playerStateUpdated',
+                            data: {
+                                id: playerId,
+                                state: data.data.state
+                            }
+                        }, ws);
+                    }
+                    break;
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
+        }
     });
-  });
-  
-  // Handle requests for player info
-  socket.on('request_player_info', (data) => {
-    const requestedPlayer = players[data.id];
-    if (requestedPlayer) {
-      // Send the requested player's info to the requesting client
-      socket.emit('player_info', {
-        id: requestedPlayer.id,
-        username: requestedPlayer.username
-      });
-    }
-  });
-  
-  // Handle player movement
-  socket.on('playerMove', (data) => {
-    // Make sure the data includes the player's ID
-    const moveData = {
-      id: data.id || socket.id,
-      x: data.x,
-      y: data.y,
-      direction: data.direction,
-      state: data.state
-    };
     
-    // Update player position in the server's player object
-    if (players[socket.id]) {
-      players[socket.id].x = moveData.x;
-      players[socket.id].y = moveData.y;
-      players[socket.id].direction = moveData.direction;
-      players[socket.id].state = moveData.state;
-      
-      // Log position updates occasionally (every ~5 seconds)
-      if (Math.random() < 0.01) {
-        console.log(`Player ${socket.id} moved to (${moveData.x}, ${moveData.y})`);
-      }
-    }
-    
-    // Broadcast the movement to ALL clients (including the sender)
-    // This ensures everyone sees the exact same positions
-    io.emit('playerMoved', moveData);
-  });
-  
-  // Handle player shooting
-  socket.on('playerShoot', (data) => {
-    // Add the shooter's ID to the bullet data
-    const bulletData = {
-      id: socket.id,
-      x: data.x,
-      y: data.y,
-      direction: data.direction,
-      bulletId: data.bulletId
-    };
-    
-    console.log(`Player ${socket.id} fired bullet ${data.bulletId}`);
-    
-    // Broadcast the bullet to all other players
-    socket.broadcast.emit('bulletCreated', bulletData);
-  });
-  
-  // Handle bullet hit
-  socket.on('bulletHit', (data) => {
-    console.log('Bullet hit received:', data);
-    
-    // Make sure we have the target ID
-    if (!data.targetId) {
-      console.error('Missing targetId in bulletHit event');
-      return;
-    }
-    
-    // Make sure we have the bullet ID
-    if (!data.bulletId) {
-      console.error('Missing bulletId in bulletHit event');
-      return;
-    }
-    
-    const targetPlayer = players[data.targetId];
-    if (targetPlayer) {
-      // Reduce health
-      targetPlayer.health = Math.max(0, targetPlayer.health - 1);
-      
-      console.log(`Player ${data.targetId} health reduced to ${targetPlayer.health}`);
-      
-      // Broadcast the hit to all players
-      io.emit('playerHit', {
-        id: data.targetId,
-        health: targetPlayer.health,
-        bulletId: data.bulletId
-      });
-      
-      // Check if player died
-      if (targetPlayer.health <= 0) {
-        // Reset health
-        targetPlayer.health = 10;
+    // Handle disconnection
+    ws.on('close', () => {
+        console.log('User disconnected:', playerId);
         
-        console.log(`Player ${data.targetId} died and respawned`);
+        // Remove player from players map
+        players.delete(playerId);
         
-        // Broadcast player death
-        io.emit('playerDied', {
-          id: data.targetId
-        });
-      }
-    } else {
-      console.log(`Target player ${data.targetId} not found`);
-      
-      // Try to find the player by iterating through all players
-      // This is a fallback in case the player ID is not matching correctly
-      const allPlayerIds = Object.keys(players);
-      console.log('Available players:', allPlayerIds);
-      
-      if (allPlayerIds.length > 0) {
-        console.log('Player IDs might not be matching correctly. Check client-side code.');
-      }
-    }
-  });
-  
-  // Handle player state update (for collisions, etc.)
-  socket.on('playerStateUpdate', (data) => {
-    if (players[socket.id]) {
-      players[socket.id].state = data.state;
-      
-      // Broadcast the state update to all other players
-      socket.broadcast.emit('playerStateUpdated', {
-        id: socket.id,
-        state: data.state
-      });
-    }
-  });
-  
-  // Handle disconnection
-  socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
-    
-    // Remove player from players object
-    delete players[socket.id];
-    
-    // Notify other players about the disconnection
-    socket.broadcast.emit('playerDisconnected', { id: socket.id });
-    
-    // Log remaining players
-    console.log('Remaining players:', Object.keys(players));
-  });
+        // Notify other players
+        broadcast({
+            type: 'playerDisconnected',
+            data: { id: playerId }
+        }, ws);
+    });
 });
+
+// Broadcast to all clients except sender
+function broadcast(message, sender) {
+    wss.clients.forEach(client => {
+        if (client !== sender && client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(message));
+        }
+    });
+}
+
+// Broadcast to all clients including sender
+function broadcastToAll(message) {
+    wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(message));
+        }
+    });
+}
 
 // Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 }); 

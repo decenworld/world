@@ -149,14 +149,49 @@ function startGame(username) {
     // Create a new Phaser game instance
     const game = new Phaser.Game(config);
     
-    // Socket.IO connection
-    const socket = io();
-    
+    // WebSocket connection with environment-based server URL
+    const wsUrl = window.location.hostname === 'localhost' 
+        ? 'ws://localhost:3000' 
+        : 'wss://' + window.location.host;
+    const socket = new WebSocket(wsUrl);
+
+    // Handle WebSocket events
+    socket.onopen = () => {
+        console.log('WebSocket connected');
+        // Send initial player info
+        if (playerID) {
+            sendWebSocketMessage('player_info', {
+                id: playerID,
+                username: playerUsername,
+                x: player.x,
+                y: player.y
+            });
+        }
+    };
+
+    socket.onclose = () => {
+        console.log('WebSocket disconnected');
+    };
+
+    socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+    };
+
+    // Single message handler for all WebSocket messages
+    socket.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            handleWebSocketMessage(message);
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    };
+
     // Add window unload handler to clean up resources
     window.addEventListener('beforeunload', () => {
-        // Disconnect socket
-        if (socket && socket.connected) {
-            socket.disconnect();
+        // Disconnect WebSocket
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.close();
         }
         
         // Destroy game
@@ -484,7 +519,7 @@ function startGame(username) {
                     }
                 });
                 
-                socket.emit('bulletHit', {
+                sendWebSocketMessage('bulletHit', {
                     targetId: playerID,
                     bulletId: bullet.bulletId,
                     health: playerHealth
@@ -522,7 +557,7 @@ function startGame(username) {
             callback: () => {
                 if (playerID) {
                     console.log('Periodic player visibility check');
-                    socket.emit('getAllPlayers');
+                    sendWebSocketMessage('getAllPlayers', {});
                 }
             },
             callbackScope: this,
@@ -535,7 +570,7 @@ function startGame(username) {
             callback: () => {
                 if (playerID) {
                     // Force a position update even when not moving
-                    socket.emit('playerMove', {
+                    sendWebSocketMessage('playerMove', {
                         id: playerID,
                         x: player.x,
                         y: player.y,
@@ -569,94 +604,48 @@ function startGame(username) {
         });
         
         // Get the player's socket ID when connected
-        socket.on('connect', () => {
+        socket.onopen = () => {
             playerID = socket.id;
             console.log('Connected with ID:', playerID);
             
             // Send player info to server
-            socket.emit('player_info', {
+            sendWebSocketMessage('player_info', {
                 id: playerID,
                 username: playerUsername,
                 x: player.x,
                 y: player.y
             });
-        });
+        };
         
         // Handle explicit playerID event from server
-        socket.on('playerID', (data) => {
-            playerID = data.id;
-            console.log('Received player ID:', playerID);
-            
-            // Now that we have our ID, send player info to server
-            console.log('Sending player_info after receiving playerID:', {
-                id: playerID,
-                username: playerUsername,
-                x: player.x,
-                y: player.y
-            });
-            
-            socket.emit('player_info', {
-                id: playerID,
-                username: playerUsername,
-                x: player.x,
-                y: player.y
-            });
-            
-            // After a short delay, request all players to ensure we have everyone
-            setTimeout(() => {
-                console.log('Requesting all players to ensure complete visibility');
-                socket.emit('getAllPlayers');
-            }, 2000);
-        });
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+            }
+        };
         
         // Handle player synchronization
-        socket.on('syncPlayers', (data) => {
-            console.log('Received player sync:', data);
-            
-            if (!data.players || !Array.isArray(data.players)) {
-                console.error('Invalid syncPlayers data received:', data);
-                return;
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-            
-            // Create or update each player
-            data.players.forEach(playerData => {
-                if (playerData.id !== playerID) {
-                    if (!otherPlayers[playerData.id]) {
-                        console.log('Creating player from sync:', playerData.id);
-                        createOtherPlayer(this, playerData);
-                    } else {
-                        console.log('Updating player from sync:', playerData.id);
-                        updateOtherPlayer(otherPlayers[playerData.id], playerData);
-                    }
-                }
-            });
-            
-            // Log the current players after sync
-            console.log('Current players after sync:', Object.keys(otherPlayers));
-        });
+        };
         
         // Handle new player joining
-        socket.on('playerJoined', (data) => {
-            console.log('playerJoined event received:', data);
-            
-            // Skip if this is our own player
-            if (data.id === playerID) {
-                console.log('Received my own player join event');
-                return;
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-            
-            // Create or update the player
-            if (!otherPlayers[data.id]) {
-                console.log('Creating new player:', data.id);
-                createOtherPlayer(this, data);
-            } else {
-                console.log('Updating existing player:', data.id);
-                updateOtherPlayer(otherPlayers[data.id], data);
-            }
-            
-            // Log the current players after join
-            console.log('Current players after join:', Object.keys(otherPlayers));
-        });
+        };
         
         // Handle mouse clicks for movement or editor
         this.input.on('pointerdown', (pointer) => {
@@ -689,7 +678,7 @@ function startGame(username) {
                     updatePlayerAnimation();
                     
                     // Emit the initial movement to the server
-                socket.emit('playerMove', {
+                sendWebSocketMessage('playerMove', {
                     id: playerID,
                     x: player.x,
                     y: player.y,
@@ -760,49 +749,14 @@ function startGame(username) {
         });
         
         // Handle other players' movements
-        socket.on('playerMoved', (data) => {
-            // Skip if playerID is not set yet
-            if (!playerID) {
-                return;
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-            
-            // If this is our own movement update, we can ignore it
-            // since we're already handling our own movement locally
-            if (data.id === playerID) {
-                return;
-            }
-            
-            console.log('Player moved:', data.id, data.x, data.y);
-            
-            // Create other player if it doesn't exist
-            if (!otherPlayers[data.id]) {
-                console.log('Creating player from movement update:', data.id);
-                createOtherPlayer(this, data);
-            } else {
-                // Update other player position and state
-                const otherPlayer = otherPlayers[data.id];
-                
-                // Set exact position for smooth movement
-                otherPlayer.targetX = data.x;
-                otherPlayer.targetY = data.y;
-                
-                // Update direction and state
-                otherPlayer.direction = data.direction || otherPlayer.direction;
-                otherPlayer.state = data.state || 'idle';
-                
-                // Update texture based on direction
-                updateOtherPlayerTexture(otherPlayer);
-                
-                // Update username text and health bar positions
-                if (otherPlayer.usernameText) {
-                    otherPlayer.usernameText.setPosition(otherPlayer.x, otherPlayer.y - 20);
-                }
-                
-                if (otherPlayer.healthBar) {
-                    updateHealthBar(otherPlayer.healthBar, otherPlayer.x, otherPlayer.y - 30, otherPlayer.health);
-                }
-            }
-        });
+        };
         
         /**
          * Update an existing other player with new data
@@ -839,198 +793,64 @@ function startGame(username) {
             }
         
         // Handle player state updates
-        socket.on('playerStateUpdated', (data) => {
-            if (otherPlayers[data.id]) {
-                otherPlayers[data.id].state = data.state;
-                updateOtherPlayerTexture(otherPlayers[data.id]);
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
         
         // Handle bullet creation from other players
-        socket.on('bulletCreated', (data) => {
-            console.log('Bullet created by other player:', data.id, data.bulletId);
-            // Create bullet from other player
-            createBullet(this, data.x, data.y, data.direction, data.id, data.bulletId);
-        });
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+            }
+        };
         
         // Handle player being hit
-        socket.on('playerHit', (data) => {
-            console.log('Player hit event received:', data);
-            
-            // If it's us who got hit
-            if (data.id === playerID) {
-                console.log('Local player hit, health reduced to:', data.health);
-                playerHealth = data.health;
-                updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
-                
-                // Flash the player red
-                player.setTint(0xff0000);
-                this.time.delayedCall(200, () => {
-                    player.clearTint();
-                });
-                
-                // Show damage text
-                const damageText = this.add.text(player.x, player.y - 40, '-1', {
-                    font: '16px Arial',
-                    fill: '#ff0000',
-                    stroke: '#000000',
-                    strokeThickness: 3
-                }).setOrigin(0.5);
-                
-                // Animate damage text
-                this.tweens.add({
-                    targets: damageText,
-                    y: damageText.y - 30,
-                    alpha: 0,
-                    duration: 800,
-                    onComplete: () => {
-                        damageText.destroy();
-                    }
-                });
-                
-                // Screen shake effect
-                this.cameras.main.shake(100, 0.01);
-            } 
-            // If it's another player who got hit
-            else if (otherPlayers[data.id]) {
-                console.log('Other player hit, health reduced to:', data.health);
-                // Update their health
-                otherPlayers[data.id].health = data.health;
-                updateHealthBar(otherPlayers[data.id].healthBar, otherPlayers[data.id].x, otherPlayers[data.id].y - 30, data.health);
-                
-                // Flash the player red
-                otherPlayers[data.id].setTint(0xff0000);
-                this.time.delayedCall(200, () => {
-                    if (otherPlayers[data.id]) {
-                        otherPlayers[data.id].clearTint();
-                    }
-                });
-                
-                // Show damage text
-                const damageText = this.add.text(otherPlayers[data.id].x, otherPlayers[data.id].y - 40, '-1', {
-                    font: '16px Arial',
-                    fill: '#ff0000',
-                    stroke: '#000000',
-                    strokeThickness: 3
-                }).setOrigin(0.5);
-                
-                // Animate damage text
-                this.tweens.add({
-                    targets: damageText,
-                    y: damageText.y - 30,
-                    alpha: 0,
-                    duration: 800,
-                    onComplete: () => {
-                        damageText.destroy();
-                    }
-                });
-                
-                // Remove the bullet that hit
-                bullets.getChildren().forEach(bullet => {
-                    if (bullet.bulletId === data.bulletId) {
-                        disableBullet(bullet);
-                    }
-                });
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handlePlayerHit(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
         
         // Handle player death
-        socket.on('playerDied', (data) => {
-            console.log('Player died event received:', data);
-            
-            // If it's us who died
-            if (data.id === playerID) {
-                console.log('Local player died and respawned');
-                playerHealth = 10; // Reset health
-                updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
-                
-                // Flash the player
-                player.setAlpha(0.5);
-                this.tweens.add({
-                    targets: player,
-                    alpha: 1,
-                    duration: 1000,
-                    ease: 'Power2'
-                });
-                
-                // Show respawn text
-                const respawnText = this.add.text(player.x, player.y - 60, 'RESPAWNED', {
-                    font: '18px Arial',
-                    fill: '#00ff00',
-                    stroke: '#000000',
-                    strokeThickness: 3
-                }).setOrigin(0.5);
-                
-                // Animate respawn text
-                this.tweens.add({
-                    targets: respawnText,
-                    y: respawnText.y - 40,
-                    alpha: 0,
-                    duration: 1500,
-                    onComplete: () => {
-                        respawnText.destroy();
-                    }
-                });
-            } 
-            // If it's another player who died
-            else if (otherPlayers[data.id]) {
-                console.log('Other player died and respawned:', data.id);
-                // Reset their health
-                otherPlayers[data.id].health = 10;
-                updateHealthBar(otherPlayers[data.id].healthBar, otherPlayers[data.id].x, otherPlayers[data.id].y - 30, 10);
-                
-                // Flash the player
-                otherPlayers[data.id].setAlpha(0.5);
-                this.tweens.add({
-                    targets: otherPlayers[data.id],
-                    alpha: 1,
-                    duration: 1000,
-                    ease: 'Power2'
-                });
-                
-                // Show respawn text
-                const respawnText = this.add.text(otherPlayers[data.id].x, otherPlayers[data.id].y - 60, 'RESPAWNED', {
-                    font: '18px Arial',
-                    fill: '#00ff00',
-                    stroke: '#000000',
-                    strokeThickness: 3
-                }).setOrigin(0.5);
-                
-                // Animate respawn text
-                this.tweens.add({
-                    targets: respawnText,
-                    y: respawnText.y - 40,
-                    alpha: 0,
-                    duration: 1500,
-                    onComplete: () => {
-                        respawnText.destroy();
-                    }
-                });
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handlePlayerDied(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
         
         // Handle player info updates
-        socket.on('player_info', (data) => {
-            console.log('Received player info:', data);
-            
-            // Update other player's username
-            if (otherPlayers[data.id] && otherPlayers[data.id].usernameText) {
-                otherPlayers[data.id].usernameText.setText(data.username);
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
         
         // Handle player disconnection
-        socket.on('playerDisconnected', (data) => {
-            console.log('Player disconnected:', data.id);
-            
-            if (otherPlayers[data.id]) {
-                // Clean up the player
-                cleanupPlayer(otherPlayers[data.id]);
-                
-                // Remove from otherPlayers object
-                delete otherPlayers[data.id];
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
         
         /**
          * Clean up a player and all associated resources
@@ -1104,7 +924,7 @@ function startGame(username) {
             );
             
             // Emit position update to server
-            socket.emit('playerMove', {
+            sendWebSocketMessage('playerMove', {
                 id: playerID,
                 x: player.x,
                 y: player.y,
@@ -1119,15 +939,14 @@ function startGame(username) {
             this.cameras.main.setSize(window.innerWidth, window.innerHeight);
         });
 
-        socket.on('playerShoot', (data) => {
-            console.log('Received playerShoot event:', data);
-            
-            // Only create bullet if it's from another player
-            if (data.id !== playerID) {
-                console.log('Creating bullet for other player:', data.id);
-                createBullet(this, data.x, data.y, data.direction, data.id, data.bulletId);
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
             }
-        });
+        };
     }
     
     /**
@@ -2055,7 +1874,7 @@ function startGame(username) {
             }
 
             // Emit bullet creation to server BEFORE creating the local bullet
-            socket.emit('playerShoot', {
+            sendWebSocketMessage('playerShoot', {
                 id: playerID,
                 x: bulletX,
                 y: bulletY,
@@ -2096,7 +1915,7 @@ function startGame(username) {
         updatePlayerAnimation();
         
         // Emit state update to server
-        socket.emit('playerStateUpdate', { state: 'idle' });
+        sendWebSocketMessage('playerStateUpdate', { state: 'idle' });
     }
     
     /**
@@ -2187,7 +2006,7 @@ function startGame(username) {
         
         // Request player info if username is not provided
         if (!data.username) {
-            socket.emit('request_player_info', { id: data.id });
+            sendWebSocketMessage('request_player_info', { id: data.id });
         }
         
         console.log('Other player created successfully:', data.id, otherPlayers[data.id].visible, otherPlayers[data.id].active, otherPlayers[data.id].texture.key);
@@ -2211,7 +2030,7 @@ function startGame(username) {
                     console.log('Bullet hit other player:', player.id, bullet.bulletId);
                     
                     // Emit bullet hit event
-                    socket.emit('bulletHit', {
+                    sendWebSocketMessage('bulletHit', {
                         targetId: player.id,
                         bulletId: bullet.bulletId
                     });
@@ -2349,7 +2168,7 @@ function startGame(username) {
                 targetPosition = null;
                 
                 // Emit state update to server
-                socket.emit('playerStateUpdate', { state: 'idle' });
+                sendWebSocketMessage('playerStateUpdate', { state: 'idle' });
             } else {
                 // Move the player towards the target
                 this.physics.moveTo(player, targetPosition.x, targetPosition.y, SPEED);
@@ -2376,7 +2195,7 @@ function startGame(username) {
             lastNetworkUpdateTime = time;
                 
                 // Emit position update to server
-                socket.emit('playerMove', {
+                sendWebSocketMessage('playerMove', {
                     id: playerID,
                     x: player.x,
                     y: player.y,
@@ -2467,7 +2286,7 @@ function startGame(username) {
         
         // Request all players to ensure we have the latest data
         console.log('Requesting all players to ensure visibility');
-        socket.emit('getAllPlayers');
+        sendWebSocketMessage('getAllPlayers', {});
     }
 
     /**
@@ -2591,10 +2410,10 @@ function startGame(username) {
             updatePlayerAnimation();
             
             // Emit state update to server
-            socket.emit('playerStateUpdate', { state: 'idle' });
+            sendWebSocketMessage('playerStateUpdate', { state: 'idle' });
             
             // Force a position update to ensure sync
-            socket.emit('playerMove', {
+            sendWebSocketMessage('playerMove', {
                 id: playerID,
                 x: player.x,
                 y: player.y,
@@ -2627,10 +2446,10 @@ function startGame(username) {
                 updatePlayerAnimation();
                 
                 // Emit state update to server
-                socket.emit('playerStateUpdate', { state: 'idle' });
+                sendWebSocketMessage('playerStateUpdate', { state: 'idle' });
                 
                 // Force a position update to ensure sync
-                socket.emit('playerMove', {
+                sendWebSocketMessage('playerMove', {
                     id: playerID,
                     x: player.x,
                     y: player.y,
@@ -2725,7 +2544,7 @@ function startGame(username) {
         updatePlayerAnimation();
         
         // Emit movement update to server immediately for better real-time sync
-        socket.emit('playerMove', {
+        sendWebSocketMessage('playerMove', {
             id: playerID,
             x: player.x,
             y: player.y,
@@ -2805,7 +2624,7 @@ function startGame(username) {
             scene.cameras.main.shake(100, 0.01);
 
             // Emit hit event to server
-            socket.emit('bulletHit', {
+            sendWebSocketMessage('bulletHit', {
                 targetId: isLocalPlayer ? playerID : hitPlayer.id,
                 bulletId: bullet.bulletId,
                 health: health
@@ -2817,7 +2636,7 @@ function startGame(username) {
             // Check if player died (health <= 0)
             if (health <= 0) {
                 // Emit death event
-                socket.emit('playerDied', {
+                sendWebSocketMessage('playerDied', {
                     id: isLocalPlayer ? playerID : hitPlayer.id
                 });
 
@@ -2850,6 +2669,91 @@ function startGame(username) {
 
         } catch (error) {
             console.error('Error in handleBulletPlayerCollision:', error);
+        }
+    }
+
+    // Handle WebSocket messages
+    function handleWebSocketMessage(message) {
+        switch (message.type) {
+            case 'playerID':
+                playerID = message.data.id;
+                console.log('Received player ID:', playerID);
+                
+                // Send player info
+                sendWebSocketMessage('player_info', {
+                    id: playerID,
+                    username: playerUsername,
+                    x: player.x,
+                    y: player.y
+                });
+                break;
+
+            case 'syncPlayers':
+                console.log('Received player sync:', message.data);
+                message.data.players.forEach(playerData => {
+                    if (playerData.id !== playerID) {
+                        if (!otherPlayers[playerData.id]) {
+                            createOtherPlayer(this, playerData);
+                        } else {
+                            updateOtherPlayer(otherPlayers[playerData.id], playerData);
+                        }
+                    }
+                });
+                break;
+
+            case 'playerJoined':
+                console.log('Player joined:', message.data);
+                if (message.data.id !== playerID) {
+                    if (!otherPlayers[message.data.id]) {
+                        createOtherPlayer(this, message.data);
+                    } else {
+                        updateOtherPlayer(otherPlayers[message.data.id], message.data);
+                    }
+                }
+                break;
+
+            case 'playerMoved':
+                if (message.data.id !== playerID) {
+                    if (!otherPlayers[message.data.id]) {
+                        createOtherPlayer(this, message.data);
+                    } else {
+                        const otherPlayer = otherPlayers[message.data.id];
+                        otherPlayer.targetX = message.data.x;
+                        otherPlayer.targetY = message.data.y;
+                        otherPlayer.direction = message.data.direction;
+                        otherPlayer.state = message.data.state;
+                        updateOtherPlayerTexture(otherPlayer);
+                    }
+                }
+                break;
+
+            case 'bulletCreated':
+                if (message.data.id !== playerID) {
+                    createBullet(this, message.data.x, message.data.y, message.data.direction, message.data.id, message.data.bulletId);
+                }
+                break;
+
+            case 'playerHit':
+                handlePlayerHit(message.data);
+                break;
+
+            case 'playerDied':
+                handlePlayerDied(message.data);
+                break;
+
+            case 'playerDisconnected':
+                if (otherPlayers[message.data.id]) {
+                    cleanupPlayer(otherPlayers[message.data.id]);
+                    delete otherPlayers[message.data.id];
+                }
+                break;
+        }
+    }
+
+    // Helper function to send WebSocket messages
+    function sendWebSocketMessage(type, data) {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type, data }));
         }
     }
 } 
