@@ -1,8 +1,18 @@
 [build]
   publish = "dist"
   command = "npm run build"
+  functions = "netlify/functions"
 
 [[redirects]]
   from = "/*"
   to = "/index.html"
-  status = 200 
+  status = 200
+
+[[redirects]]
+  from = "/.netlify/functions/websocket"
+  to = "/.netlify/functions/websocket"
+  status = 200
+  force = true
+  [headers]
+    Connection = "Upgrade"
+    Upgrade = "websocket" 

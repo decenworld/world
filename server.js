@@ -26,8 +26,8 @@ wss.on('connection', (ws) => {
     
     // Store the WebSocket connection
     ws.playerId = playerId;
-    
-    // Send the player their ID
+  
+  // Send the player their ID
     ws.send(JSON.stringify({
         type: 'playerID',
         data: { id: playerId }
@@ -40,14 +40,14 @@ wss.on('connection', (ws) => {
             
             switch(data.type) {
                 case 'player_info':
-                    // Store player info
+    // Store player info
                     players.set(playerId, {
                         id: playerId,
                         username: data.data.username,
                         x: data.data.x || 400,
                         y: data.data.y || 300,
-                        health: 10,
-                        direction: 'down',
+      health: 10,
+      direction: 'down',
                         state: 'idle',
                         ws: ws
                     });
@@ -141,20 +141,20 @@ wss.on('connection', (ws) => {
                 
                 case 'bulletHit':
                     const targetPlayer = players.get(data.data.targetId);
-                    if (targetPlayer) {
-                        targetPlayer.health = Math.max(0, targetPlayer.health - 1);
-                        
+    if (targetPlayer) {
+      targetPlayer.health = Math.max(0, targetPlayer.health - 1);
+      
                         broadcastToAll({
                             type: 'playerHit',
                             data: {
                                 id: data.data.targetId,
-                                health: targetPlayer.health,
+        health: targetPlayer.health,
                                 bulletId: data.data.bulletId
                             }
-                        });
-                        
-                        if (targetPlayer.health <= 0) {
-                            targetPlayer.health = 10;
+      });
+      
+      if (targetPlayer.health <= 0) {
+        targetPlayer.health = 10;
                             broadcastToAll({
                                 type: 'playerDied',
                                 data: { id: data.data.targetId }
@@ -179,10 +179,10 @@ wss.on('connection', (ws) => {
             }
         } catch (error) {
             console.error('Error handling message:', error);
-        }
-    });
-    
-    // Handle disconnection
+    }
+  });
+  
+  // Handle disconnection
     ws.on('close', () => {
         console.log('User disconnected:', playerId);
         
@@ -194,7 +194,7 @@ wss.on('connection', (ws) => {
             type: 'playerDisconnected',
             data: { id: playerId }
         }, ws);
-    });
+  });
 });
 
 // Broadcast to all clients except sender
@@ -218,5 +218,5 @@ function broadcastToAll(message) {
 // Start the server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 }); 

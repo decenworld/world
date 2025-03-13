@@ -150,65 +150,85 @@ function startGame(username) {
     const game = new Phaser.Game(config);
     
     // WebSocket connection with environment-based server URL
-    const wsUrl = window.location.hostname === 'localhost' 
-        ? 'ws://localhost:3000' 
-        : 'wss://' + window.location.host;
-    const socket = new WebSocket(wsUrl);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = window.location.hostname === 'localhost'
+        ? `ws://localhost:3000/.netlify/functions/websocket`
+        : `${wsProtocol}//${window.location.host}/.netlify/functions/websocket`;
+    
+    console.log('Attempting WebSocket connection to:', wsUrl);
+    
+    let socket = new WebSocket(wsUrl);
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
+    const reconnectDelay = 3000; // 3 seconds
 
-    // Handle WebSocket events
-    socket.onopen = () => {
-        console.log('WebSocket connected');
-        // Send initial player info
-        if (playerID) {
-            sendWebSocketMessage('player_info', {
-                id: playerID,
-                username: playerUsername,
-                x: player.x,
-                y: player.y
-            });
-        }
-    };
+    // Add connection status indicator
+    const connectionStatus = document.createElement('div');
+    connectionStatus.style.position = 'fixed';
+    connectionStatus.style.top = '10px';
+    connectionStatus.style.left = '10px';
+    connectionStatus.style.padding = '5px 10px';
+    connectionStatus.style.borderRadius = '5px';
+    connectionStatus.style.fontSize = '12px';
+    connectionStatus.style.zIndex = '9999';
+    document.body.appendChild(connectionStatus);
 
-    socket.onclose = () => {
-        console.log('WebSocket disconnected');
-    };
+    function updateConnectionStatus(status, color) {
+        connectionStatus.textContent = `WebSocket: ${status}`;
+        connectionStatus.style.backgroundColor = color;
+        connectionStatus.style.color = '#fff';
+    }
 
-    socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-    };
-
-    // Single message handler for all WebSocket messages
-    socket.onmessage = (event) => {
-        try {
-            const message = JSON.parse(event.data);
-            handleWebSocketMessage(message);
-        } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-        }
-    };
-
-    // Add window unload handler to clean up resources
-    window.addEventListener('beforeunload', () => {
-        // Disconnect WebSocket
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.close();
-        }
+    function connectWebSocket() {
+        socket = new WebSocket(wsUrl);
         
-        // Destroy game
-        if (game) {
-            game.destroy(true);
-        }
-        
-        // Clear any references
-        player = null;
-        playerText = null;
-        playerHealthBar = null;
-        map = null;
-        targetPosition = null;
-        cursors = null;
-        otherPlayers = {};
-        bullets = null;
-    });
+        socket.onopen = () => {
+            console.log('WebSocket connected successfully');
+            updateConnectionStatus('Connected', '#4CAF50');
+            reconnectAttempts = 0;
+            
+            // Send initial player info if available
+            if (playerID && player) {
+                sendWebSocketMessage('player_info', {
+                    id: playerID,
+                    username: playerUsername,
+                    x: player.x,
+                    y: player.y
+                });
+            }
+        };
+
+        socket.onclose = (event) => {
+            console.log('WebSocket disconnected:', event.code, event.reason);
+            updateConnectionStatus('Disconnected', '#f44336');
+            
+            // Attempt to reconnect if under max attempts
+            if (reconnectAttempts < maxReconnectAttempts) {
+                reconnectAttempts++;
+                updateConnectionStatus(`Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`, '#FF9800');
+                setTimeout(connectWebSocket, reconnectDelay);
+            } else {
+                updateConnectionStatus('Failed to connect', '#f44336');
+            }
+        };
+
+        socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            updateConnectionStatus('Error', '#f44336');
+        };
+
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+            }
+        };
+    }
+
+    // Initial connection
+    connectWebSocket();
     
     // Game variables
     let player;
@@ -1718,10 +1738,10 @@ function startGame(username) {
                 bullet.body.setImmovable(true);
                 bullet.body.collideWorldBounds = false;
             }
-            
+                
             // Store original velocity for reference
-            bullet.originalVelocity = { x: vx, y: vy };
-            
+                bullet.originalVelocity = { x: vx, y: vy };
+                
             // Add bullet to group
             bullets.add(bullet);
             
@@ -1737,9 +1757,9 @@ function startGame(username) {
             // Create muzzle flash
             const flash = scene.add.circle(x, y, 10, 0xff0000, 0.7);
             flash.setDepth(101);
-            scene.tweens.add({
+                scene.tweens.add({
                 targets: flash,
-                alpha: 0,
+                    alpha: 0,
                 scale: 0.5,
                 duration: 100,
                 onComplete: () => flash.destroy()
@@ -1842,24 +1862,24 @@ function startGame(username) {
                 console.error('Invalid scene, player, or playerID for shooting');
                 return;
             }
-
+            
             // Check if enough time has passed since last shot
             const time = scene.time.now;
             if (time - lastFired < fireDelay) {
                 return;
             }
-
+            
             // Update last fired time
             lastFired = time;
-
+            
             // Create bullet ID
             const bulletId = Date.now().toString();
-
+            
             // Calculate bullet spawn position based on player direction
             let bulletX = player.x;
             let bulletY = player.y;
             const offset = 20;
-
+            
             // Adjust bullet spawn position based on direction
             switch (playerDirection) {
                 case 'up': bulletY -= offset; break;
@@ -1876,12 +1896,12 @@ function startGame(username) {
             // Emit bullet creation to server BEFORE creating the local bullet
             sendWebSocketMessage('playerShoot', {
                 id: playerID,
-                x: bulletX,
-                y: bulletY,
-                direction: playerDirection,
-                bulletId: bulletId
-            });
-
+                    x: bulletX,
+                    y: bulletY,
+                    direction: playerDirection,
+                    bulletId: bulletId
+                });
+                
             // Create the local bullet
             const bullet = createBullet(scene, bulletX, bulletY, playerDirection, playerID, bulletId);
             if (!bullet) {
@@ -1931,7 +1951,7 @@ function startGame(username) {
 
         // Only log if we have a bullet ID
         if (bullet.bulletId) {
-            console.log('Bullet hit obstacle:', bullet.bulletId);
+        console.log('Bullet hit obstacle:', bullet.bulletId);
         }
         
         // Create impact effect
