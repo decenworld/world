@@ -1151,24 +1151,36 @@ function showLoginScreen() {
                 const verifyUrl = `${baseUrl}/verify-turnstile`;
                 console.log('Sending verification to:', verifyUrl);
                 
+                // Add timestamp to help prevent caching issues
+                const requestTime = new Date().getTime();
+                
                 // Verify captcha on server
-                const response = await fetch(verifyUrl, {
+                const response = await fetch(`${verifyUrl}?t=${requestTime}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate'
                     },
-                    body: JSON.stringify({ token: captchaToken }),
-                    credentials: 'same-origin'
+                    body: JSON.stringify({ 
+                        token: captchaToken,
+                        timestamp: requestTime 
+                    }),
+                    credentials: 'same-origin',
+                    mode: 'cors',
+                    cache: 'no-store'
                 });
                 
-                if (!response.ok) {
-                    const errorText = `Server responded with status: ${response.status}`;
-                    console.error(errorText);
-                    throw new Error(errorText);
+                const responseText = await response.text();
+                let data;
+                
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    console.error('Error parsing response:', e, 'Response text:', responseText);
+                    throw new Error('Invalid response from server: ' + responseText.substring(0, 100));
                 }
                 
-                const data = await response.json();
                 console.log('Verification response:', data);
                 
                 if (data.success) {
@@ -1184,7 +1196,23 @@ function showLoginScreen() {
                     // Show detailed error
                     let errorText = 'Captcha verification failed. Please try again.';
                     if (data.errors && data.errors.length) {
-                        errorText += ' Error: ' + data.errors.join(', ');
+                        const errorCode = data.errors.join(', ');
+                        console.error('Verification error code:', errorCode);
+                        
+                        // Handle specific error codes
+                        if (errorCode.includes('missing-input-secret')) {
+                            errorText = 'Server configuration error: missing secret key. Please notify the administrator.';
+                        } else if (errorCode.includes('invalid-input-secret')) {
+                            errorText = 'Server configuration error: invalid secret key. Please notify the administrator.';
+                        } else if (errorCode.includes('timeout-or-duplicate')) {
+                            errorText = 'Captcha token expired. Please complete the captcha again.';
+                            // Reset captcha on timeout
+                            if (window.turnstile) {
+                                window.turnstile.reset('#cf-turnstile');
+                            }
+                        } else {
+                            errorText += ' Error: ' + errorCode;
+                        }
                     } else if (data.message) {
                         errorText += ' ' + data.message;
                     }
@@ -1203,16 +1231,25 @@ function showLoginScreen() {
                     return attemptVerification();
                 }
                 
+                // Check if we need to reset the captcha
+                const errorMsg = error.message.toLowerCase();
+                const needsReset = errorMsg.includes('expired') || 
+                                   errorMsg.includes('timeout') || 
+                                   errorMsg.includes('duplicate') ||
+                                   errorMsg.includes('invalid');
+                
                 // Show error message
                 errorMessage.textContent = error.message || 'There was an error verifying the captcha. Please try again.';
                 errorMessage.style.display = 'block';
                 
-                // Reset captcha token
-                captchaToken = null;
-                
-                // Reset captcha
-                if (window.turnstile) {
-                    window.turnstile.reset('#cf-turnstile');
+                // Reset captcha token if needed
+                if (needsReset) {
+                    captchaToken = null;
+                    
+                    // Reset captcha
+                    if (window.turnstile) {
+                        window.turnstile.reset('#cf-turnstile');
+                    }
                 }
                 
                 // Re-enable button
@@ -1256,6 +1293,18 @@ function showLoginScreen() {
             window.turnstile.render('#cf-turnstile', {
                 sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
                 theme: 'light',
+                // Set to "never" to help with Firefox tracking protection
+                appearance: 'always',
+                // Enable cookies to help with browsers blocking third-party cookies
+                action: 'login',
+                // Set size to compact to avoid layout issues
+                size: 'normal',
+                // Add retry to help avoid browser protection issues
+                retry: 'auto',
+                // Add language parameter
+                language: 'auto',
+                // Set the timeout to reasonable value
+                "refresh-expired": "auto",
                 callback: function(token) {
                     console.log('Captcha completed successfully');
                     captchaToken = token;
@@ -1264,6 +1313,11 @@ function showLoginScreen() {
                 'expired-callback': function() {
                     console.log('Captcha expired');
                     captchaToken = null;
+                },
+                'error-callback': function(error) {
+                    console.error('Turnstile error:', error);
+                    errorMessage.textContent = 'There was an error with the captcha. Please refresh the page and try again.';
+                    errorMessage.style.display = 'block';
                 }
             });
         };
@@ -1278,6 +1332,18 @@ function showLoginScreen() {
         window.turnstile.render('#cf-turnstile', {
             sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
             theme: 'light',
+            // Set to "never" to help with Firefox tracking protection
+            appearance: 'always',
+            // Enable cookies to help with browsers blocking third-party cookies
+            action: 'login',
+            // Set size to compact to avoid layout issues
+            size: 'normal',
+            // Add retry to help avoid browser protection issues
+            retry: 'auto',
+            // Add language parameter
+            language: 'auto',
+            // Set the timeout to reasonable value
+            "refresh-expired": "auto",
             callback: function(token) {
                 console.log('Captcha completed successfully');
                 captchaToken = token;
@@ -1286,6 +1352,11 @@ function showLoginScreen() {
             'expired-callback': function() {
                 console.log('Captcha expired');
                 captchaToken = null;
+            },
+            'error-callback': function(error) {
+                console.error('Turnstile error:', error);
+                errorMessage.textContent = 'There was an error with the captcha. Please refresh the page and try again.';
+                errorMessage.style.display = 'block';
             }
         });
     }

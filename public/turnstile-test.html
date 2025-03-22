@@ -24,6 +24,9 @@
             border-radius: 5px;
             background-color: #f5f5f5;
             min-height: 100px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: break-word;
         }
         button {
             padding: 10px 15px;
@@ -40,10 +43,21 @@
         #turnstile {
             margin: 20px 0;
         }
+        .note {
+            background-color: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 10px;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
     <h1>Cloudflare Turnstile Test</h1>
+    
+    <div class="note">
+        <p><strong>Important:</strong> If you're using Firefox with Enhanced Tracking Protection, you might need to disable it for this page.</p>
+        <p>Click the shield icon in the address bar and select "Turn off protection for this site".</p>
+    </div>
     
     <div class="container">
         <h2>1. Render Turnstile Widget</h2>
@@ -78,9 +92,9 @@
         }
         
         // When error
-        function turnstileError() {
-            console.log('Turnstile error');
-            results.innerHTML += `<p>Error loading Turnstile. Please refresh the page.</p>`;
+        function turnstileError(error) {
+            console.log('Turnstile error:', error);
+            results.innerHTML += `<p>Error loading Turnstile: ${error || 'Unknown error'}. Please refresh the page.</p>`;
         }
         
         // Load Turnstile
@@ -94,7 +108,14 @@
                         sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
                         callback: turnstileCallback,
                         'expired-callback': turnstileExpired,
-                        'error-callback': turnstileError
+                        'error-callback': turnstileError,
+                        theme: 'light',
+                        appearance: 'always',
+                        action: 'verify',
+                        size: 'normal',
+                        retry: 'auto',
+                        language: 'auto',
+                        "refresh-expired": "auto"
                     });
                     results.innerHTML = `<p>Turnstile loaded. Please solve the captcha.</p>`;
                 } else {
@@ -118,21 +139,35 @@
                 // Get the base URL
                 const baseUrl = window.location.origin;
                 const verifyUrl = `${baseUrl}/verify-turnstile`;
+                const timestamp = new Date().getTime();
                 
-                results.innerHTML += `<p>Sending request to: ${verifyUrl}</p>`;
+                results.innerHTML += `<p>Sending request to: ${verifyUrl}?t=${timestamp}</p>`;
                 
                 // Send the token to the server
-                const response = await fetch(verifyUrl, {
+                const response = await fetch(`${verifyUrl}?t=${timestamp}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
-                        'Accept': 'application/json'
+                        'Accept': 'application/json',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate'
                     },
-                    body: JSON.stringify({ token })
+                    body: JSON.stringify({ 
+                        token,
+                        timestamp
+                    }),
+                    cache: 'no-store'
                 });
                 
-                // Parse the response
-                const data = await response.json();
+                // Get response as text first
+                const responseText = await response.text();
+                let data;
+                
+                try {
+                    data = JSON.parse(responseText);
+                } catch (e) {
+                    results.innerHTML += `<p>Failed to parse response as JSON. Raw response:</p><pre>${responseText}</pre>`;
+                    throw new Error('Invalid JSON response from server');
+                }
                 
                 results.innerHTML += `<p>Verification response:</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
                 
@@ -142,6 +177,19 @@
                     results.innerHTML += `<p style="color: red;">Verification failed: ${data.message || 'Unknown error'}</p>`;
                     if (data.errors) {
                         results.innerHTML += `<p>Errors: ${data.errors.join(', ')}</p>`;
+                        
+                        // Handle specific errors
+                        if (data.errors.includes('timeout-or-duplicate')) {
+                            results.innerHTML += `<p>The token has expired. Please solve the captcha again.</p>`;
+                            if (window.turnstile) {
+                                window.turnstile.reset();
+                                token = null;
+                            }
+                        } else if (data.errors.includes('missing-input-secret')) {
+                            results.innerHTML += `<p>Server configuration error: missing secret key.</p>`;
+                        } else if (data.errors.includes('invalid-input-secret')) {
+                            results.innerHTML += `<p>Server configuration error: invalid secret key.</p>`;
+                        }
                     }
                 }
             } catch (error) {

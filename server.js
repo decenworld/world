@@ -14,7 +14,15 @@ const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NOD
 // Configure port for Railway compatibility
 const PORT = process.env.PORT || 3000;
 // Get Cloudflare Turnstile Secret Key from env
-const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
+const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || 
+  // Only use this fake key in development for testing
+  (isDevelopment ? 'testing_mock_secret_key_for_development_only' : '');
+
+// Log environment settings at startup
+console.log(`Environment: ${isDevelopment ? 'Development' : 'Production'}`);
+if (isDevelopment && !process.env.TURNSTILE_SECRET_KEY) {
+  console.log('Using development mode mock secret key for Turnstile');
+}
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
@@ -62,11 +70,14 @@ app.post('/verify-turnstile', async (req, res) => {
       });
     }
     
+    // Check for secret key
     if (!TURNSTILE_SECRET_KEY) {
       console.error('TURNSTILE_SECRET_KEY is not set in environment variables');
-      return res.status(500).json({ 
+      // Instead of returning 500, return a more specific error
+      return res.status(400).json({ 
         success: false, 
-        message: 'Server configuration error: TURNSTILE_SECRET_KEY is not set' 
+        message: 'Server configuration error: TURNSTILE_SECRET_KEY is not set',
+        errors: ['missing-input-secret']
       });
     }
     
@@ -78,44 +89,76 @@ app.post('/verify-turnstile', async (req, res) => {
     const formData = new URLSearchParams();
     formData.append('secret', TURNSTILE_SECRET_KEY);
     formData.append('response', token);
-    formData.append('remoteip', ip); // Add the client IP
     
-    console.log('Sending verification request to Cloudflare');
-    console.log(`Using secret key length: ${TURNSTILE_SECRET_KEY.length} characters`);
-    
-    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
-      method: 'POST',
-      body: formData,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
-      }
-    });
-    
-    if (!response.ok) {
-      console.error(`Cloudflare responded with status: ${response.status}`);
-      return res.status(500).json({ 
-        success: false, 
-        message: `Cloudflare verification failed with status: ${response.status}` 
-      });
+    // Only add IP if it's available and valid
+    if (ip && ip !== '::1' && !ip.includes('127.0.0.1')) {
+      formData.append('remoteip', ip);
     }
     
-    const data = await response.json();
-    console.log('Cloudflare verification response:', data);
+    console.log('Sending verification request to Cloudflare');
+    console.log(`Using secret key of length: ${TURNSTILE_SECRET_KEY.length} characters`);
     
-    if (data.success) {
-      console.log('Captcha verification successful');
-      return res.json({ success: true });
-    } else {
-      console.error('Captcha verification failed:', data['error-codes']);
+    // More complete error handling for the fetch request
+    try {
+      const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+        method: 'POST',
+        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        // Add timeout to prevent hanging requests
+        timeout: 5000
+      });
+      
+      if (!response.ok) {
+        console.error(`Cloudflare responded with status: ${response.status}`);
+        return res.status(400).json({ 
+          success: false, 
+          message: `Cloudflare verification failed with status: ${response.status}`,
+          errors: ['verification-failed']
+        });
+      }
+      
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('Error parsing Cloudflare response:', jsonError);
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Invalid response from Cloudflare', 
+          errors: ['invalid-response']
+        });
+      }
+      
+      console.log('Cloudflare verification response:', data);
+      
+      if (data.success) {
+        console.log('Captcha verification successful');
+        return res.json({ success: true });
+      } else {
+        console.error('Captcha verification failed:', data['error-codes']);
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Captcha verification failed', 
+          errors: data['error-codes'] || ['unknown-error']
+        });
+      }
+    } catch (fetchError) {
+      console.error('Error fetching from Cloudflare:', fetchError);
       return res.status(400).json({ 
         success: false, 
-        message: 'Captcha verification failed', 
-        errors: data['error-codes'] 
+        message: 'Error contacting Cloudflare: ' + fetchError.message,
+        errors: ['network-error'] 
       });
     }
   } catch (error) {
     console.error('Error verifying turnstile:', error.message, error.stack);
-    return res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    return res.status(400).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message,
+      errors: ['server-error']
+    });
   }
 });
 
@@ -401,15 +444,24 @@ function broadcastToAll(message) {
 server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`WebSocket server ready at ws://localhost:${PORT}`);
-    if (!TURNSTILE_SECRET_KEY) {
-      console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set.');
+    
+    // Log Turnstile configuration
+    if (!process.env.TURNSTILE_SECRET_KEY) {
       if (isDevelopment) {
-        console.warn('Running in development mode: Captcha verification will be bypassed for testing.');
+        console.log('=== CAPTCHA CONFIGURATION ===');
+        console.log('Running in development mode: Using mock secret key for Turnstile');
+        console.log('Captcha verification will succeed in development mode for testing purposes.');
+        console.log('For production, set the TURNSTILE_SECRET_KEY environment variable in your Railway deployment.');
       } else {
-        console.warn('Cloudflare Turnstile captcha verification will not work correctly.');
+        console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set.');
+        console.warn('Cloudflare Turnstile captcha verification will not work correctly in production.');
+        console.warn('Please set the TURNSTILE_SECRET_KEY environment variable in your Railway environment variables.');
       }
-      console.warn('Please set the TURNSTILE_SECRET_KEY environment variable in your Railway environment variables.');
     } else {
-      console.log('Cloudflare Turnstile is configured and ready.');
+      console.log('Cloudflare Turnstile is configured and ready with secret key from environment variables.');
     }
+    
+    console.log('======================================');
+    console.log('Access the test page at: http://localhost:' + PORT + '/turnstile-test.html');
+    console.log('======================================');
 }); 
