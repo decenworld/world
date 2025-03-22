@@ -7,6 +7,9 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 
+// Configure port for Railway compatibility
+const PORT = process.env.PORT || 3000;
+
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
@@ -16,8 +19,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Serve static files from the images directory
 app.use('/images', express.static(path.join(__dirname, 'images')));
 
+// Setup CORS for cross-origin requests
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  next();
+});
+
+// Add a basic health check endpoint for Railway
+app.get('/health', (req, res) => {
+  res.status(200).send({ status: 'ok', players: players.size });
+});
+
 // Store player information and their WebSocket connections
 const players = new Map();
+const INVULNERABILITY_DURATION = 5000; // 5 seconds invulnerability after respawn
 
 // WebSocket connection handling
 wss.on('connection', (ws) => {
@@ -27,7 +44,7 @@ wss.on('connection', (ws) => {
     // Store the WebSocket connection
     ws.playerId = playerId;
   
-  // Send the player their ID
+    // Send the player their ID
     ws.send(JSON.stringify({
         type: 'playerID',
         data: { id: playerId }
@@ -40,16 +57,18 @@ wss.on('connection', (ws) => {
             
             switch(data.type) {
                 case 'player_info':
-    // Store player info
+                    // Store player info
                     players.set(playerId, {
                         id: playerId,
                         username: data.data.username,
                         x: data.data.x || 400,
                         y: data.data.y || 300,
-      health: 10,
-      direction: 'down',
+                        health: 10,
+                        direction: 'down',
                         state: 'idle',
-                        ws: ws
+                        ws: ws,
+                        isInvulnerable: false,
+                        invulnerableUntil: 0
                     });
                     
                     // Send existing players to new player
@@ -62,7 +81,8 @@ wss.on('connection', (ws) => {
                             y: player.y,
                             health: player.health,
                             direction: player.direction,
-                            state: player.state
+                            state: player.state,
+                            isInvulnerable: player.isInvulnerable
                         }));
                     
                     ws.send(JSON.stringify({
@@ -81,7 +101,8 @@ wss.on('connection', (ws) => {
                             y: playerData.y,
                             health: playerData.health,
                             direction: playerData.direction,
-                            state: playerData.state
+                            state: playerData.state,
+                            isInvulnerable: playerData.isInvulnerable
                         }
                     }, ws);
                     break;
@@ -96,7 +117,8 @@ wss.on('connection', (ws) => {
                             y: player.y,
                             health: player.health,
                             direction: player.direction,
-                            state: player.state
+                            state: player.state,
+                            isInvulnerable: player.isInvulnerable
                         }));
                     
                     ws.send(JSON.stringify({
@@ -127,38 +149,85 @@ wss.on('connection', (ws) => {
                     break;
                 
                 case 'playerShoot':
-                    broadcast({
-                        type: 'bulletCreated',
-                        data: {
-                            id: playerId,
-                            x: data.data.x,
-                            y: data.data.y,
-                            direction: data.data.direction,
-                            bulletId: data.data.bulletId
-                        }
-                    }, ws);
+                    // Check if player is in invulnerability period
+                    const shootingPlayer = players.get(playerId);
+                    if (shootingPlayer && !shootingPlayer.isInvulnerable) {
+                        broadcast({
+                            type: 'bulletCreated',
+                            data: {
+                                id: playerId,
+                                x: data.data.x,
+                                y: data.data.y,
+                                direction: data.data.direction,
+                                bulletId: data.data.bulletId
+                            }
+                        }, ws);
+                    }
                     break;
                 
                 case 'bulletHit':
                     const targetPlayer = players.get(data.data.targetId);
-    if (targetPlayer) {
-      targetPlayer.health = Math.max(0, targetPlayer.health - 1);
-      
+                    if (targetPlayer && !targetPlayer.isInvulnerable) {
+                        // Reduce target player's health
+                        targetPlayer.health = Math.max(0, targetPlayer.health - 1);
+                        
+                        // Broadcast hit to all players with current health
                         broadcastToAll({
                             type: 'playerHit',
                             data: {
                                 id: data.data.targetId,
-        health: targetPlayer.health,
-                                bulletId: data.data.bulletId
+                                health: targetPlayer.health,
+                                bulletId: data.data.bulletId,
+                                shooterId: playerId
                             }
-      });
-      
-      if (targetPlayer.health <= 0) {
-        targetPlayer.health = 10;
+                        });
+                        
+                        // Handle player death if health is zero
+                        if (targetPlayer.health <= 0) {
+                            // Reset health to full
+                            targetPlayer.health = 10;
+                            
+                            // Set player as invulnerable for 5 seconds
+                            targetPlayer.isInvulnerable = true;
+                            targetPlayer.invulnerableUntil = Date.now() + INVULNERABILITY_DURATION;
+                            
+                            // First send death event
                             broadcastToAll({
                                 type: 'playerDied',
-                                data: { id: data.data.targetId }
+                                data: { 
+                                    id: data.data.targetId,
+                                    invulnerableDuration: INVULNERABILITY_DURATION
+                                }
                             });
+                            
+                            // Then send health update to ensure health bar is updated
+                            broadcastToAll({
+                                type: 'playerHit',
+                                data: {
+                                    id: data.data.targetId,
+                                    health: targetPlayer.health,
+                                    bulletId: data.data.bulletId,
+                                    shooterId: playerId,
+                                    isInvulnerable: true
+                                }
+                            });
+                            
+                            // Set a timeout to remove invulnerability
+                            setTimeout(() => {
+                                // Make sure player still exists
+                                if (players.has(data.data.targetId)) {
+                                    const player = players.get(data.data.targetId);
+                                    player.isInvulnerable = false;
+                                    
+                                    // Notify all clients that player is no longer invulnerable
+                                    broadcastToAll({
+                                        type: 'playerVulnerable',
+                                        data: { 
+                                            id: data.data.targetId
+                                        }
+                                    });
+                                }
+                            }, INVULNERABILITY_DURATION);
                         }
                     }
                     break;
@@ -176,47 +245,73 @@ wss.on('connection', (ws) => {
                         }, ws);
                     }
                     break;
+                
+                case 'player_disconnect':
+                    console.log('Received manual disconnect from player:', playerId);
+                    
+                    // Make sure the player exists in our players map before removing them
+                    if (players.has(playerId)) {
+                        // Remove player from players map
+                        players.delete(playerId);
+                        
+                        // Notify other players
+                        broadcast({
+                            type: 'playerDisconnected',
+                            data: { id: playerId }
+                        }, ws);
+                        
+                        console.log(`Player ${playerId} has been manually disconnected. Current player count: ${players.size}`);
+                    } else {
+                        console.log(`Player ${playerId} was already removed or did not exist`);
+                    }
+                    break;
             }
         } catch (error) {
             console.error('Error handling message:', error);
-    }
-  });
-  
-  // Handle disconnection
+        }
+    });
+    
+    // Handle WebSocket disconnection
     ws.on('close', () => {
-        console.log('User disconnected:', playerId);
+        console.log('Player disconnected:', playerId);
         
         // Remove player from players map
-        players.delete(playerId);
-        
-        // Notify other players
-        broadcast({
-            type: 'playerDisconnected',
-            data: { id: playerId }
-        }, ws);
-  });
+        if (players.has(playerId)) {
+            players.delete(playerId);
+            
+            // Notify other players about this disconnection
+            broadcast({
+                type: 'playerDisconnected',
+                data: { id: playerId }
+            }, ws);
+        }
+    });
 });
 
-// Broadcast to all clients except sender
-function broadcast(message, sender) {
-    wss.clients.forEach(client => {
-        if (client !== sender && client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(message));
+// Helper function to broadcast message to all clients except the sender
+function broadcast(message, senderWs) {
+    const messageString = JSON.stringify(message);
+    
+    wss.clients.forEach((client) => {
+        if (client !== senderWs && client.readyState === WebSocket.OPEN) {
+            client.send(messageString);
         }
     });
 }
 
-// Broadcast to all clients including sender
+// Helper function to broadcast to all clients including sender
 function broadcastToAll(message) {
-    wss.clients.forEach(client => {
+    const messageString = JSON.stringify(message);
+    
+    wss.clients.forEach((client) => {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(message));
+            client.send(messageString);
         }
     });
 }
 
 // Start the server
-const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`WebSocket server ready at ws://localhost:${PORT}`);
 }); 

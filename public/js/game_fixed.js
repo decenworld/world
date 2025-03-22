@@ -124,6 +124,10 @@ function sendWebSocketMessage(type, data) {
  * @param {number} health - The health value (0-10)
  */
 function updateHealthBar(graphics, x, y, health) {
+    if (!graphics || !graphics.active) {
+        return;
+    }
+    
     // Clear previous graphics
     graphics.clear();
     
@@ -147,6 +151,9 @@ function updateHealthBar(graphics, x, y, health) {
     // Draw health bar
     graphics.fillStyle(color, 1);
     graphics.fillRect(x - 25, y - 5, 50 * healthPercent, 10);
+    
+    // Ensure the healthbar has high depth to be visible
+    graphics.setDepth(999);
 }
 
 /**
@@ -276,13 +283,50 @@ function updateBulletCollisionForPlayer(scene, otherPlayer) {
         
         // Create a single collider for all bullets with this player if it doesn't exist
         if (!otherPlayer.bulletCollider) {
-            otherPlayer.bulletCollider = scene.physics.add.overlap(bullets, otherPlayer.sprite, (playerSprite, bullet) => {
+            otherPlayer.bulletCollider = scene.physics.add.overlap(bullets, otherPlayer.sprite, (sprite, bullet) => {
                 // Only process if this bullet is from the local player
                 if (bullet.active && bullet.shooterId === playerID) {
                     console.log('Bullet hit other player:', otherPlayer.id, bullet.bulletId);
                     
-                    // Handle the collision (simplified to notify server)
-                    handleBulletPlayerCollision(scene, bullet, playerSprite);
+                    // Emit bullet hit event with health information
+                    sendWebSocketMessage('bulletHit', {
+                        targetId: otherPlayer.id,
+                        bulletId: bullet.bulletId,
+                        health: (otherPlayer.health || 10) - 1 // Send current health - 1
+                    });
+                    
+                    // Client-side immediate feedback - update health locally
+                    // This will be overridden by server response but gives immediate feedback
+                    otherPlayer.health = Math.max(0, (otherPlayer.health || 10) - 1);
+                    if (otherPlayer.healthBar) {
+                        updateHealthBar(otherPlayer.healthBar, otherPlayer.sprite.x, otherPlayer.sprite.y - 30, otherPlayer.health);
+                    }
+                    
+                    // Create blood splatter effect
+                    const blood = scene.add.circle(bullet.x, bullet.y, 8, 0xbb0000, 0.8);
+                    blood.setDepth(101);
+                    
+                    // Fade out and destroy the blood
+                    scene.tweens.add({
+                        targets: blood,
+                        alpha: 0,
+                        scale: 3,
+                        duration: 300,
+                        onComplete: () => {
+                            blood.destroy();
+                        }
+                    });
+                    
+                    // Flash player red to indicate damage
+                    sprite.setTint(0xff0000);
+                    scene.time.delayedCall(200, () => {
+                        if (sprite.active) {
+                            sprite.clearTint();
+                        }
+                    });
+                    
+                    // Disable the bullet
+                    disableBullet(bullet);
                 }
             });
         }
@@ -305,34 +349,10 @@ function updateOtherPlayer(otherPlayer, data) {
         
         // Update position
         if (data.x !== undefined && data.y !== undefined) {
-            // Set target position for smooth interpolation
-            otherPlayer.targetX = data.x;
-            otherPlayer.targetY = data.y;
-            
-            // If this is the first update or a teleport, set position directly
-            const distanceThreshold = 100; // Distance beyond which we consider it a teleport
-            const distance = Phaser.Math.Distance.Between(
-                otherPlayer.x, otherPlayer.y,
-                data.x, data.y
-            );
-            
-            if (distance > distanceThreshold) {
-                // Teleport
-                otherPlayer.x = data.x;
-                otherPlayer.y = data.y;
-                otherPlayer.sprite.x = data.x;
-                otherPlayer.sprite.y = data.y;
-                
-                // Update username and health bar immediately
-                if (otherPlayer.usernameText) {
-                    otherPlayer.usernameText.setPosition(data.x, data.y - 20);
-                }
-                
-                if (otherPlayer.healthBar) {
-                    updateHealthBar(otherPlayer.healthBar, data.x, data.y - 30, otherPlayer.health);
-                }
-            }
-            // Otherwise, the update function will smoothly interpolate to the target position
+            otherPlayer.x = data.x;
+            otherPlayer.y = data.y;
+            otherPlayer.sprite.x = data.x;
+            otherPlayer.sprite.y = data.y;
         }
         
         // Update direction and state
@@ -347,8 +367,6 @@ function updateOtherPlayer(otherPlayer, data) {
         // Update health
         if (data.health !== undefined) {
             otherPlayer.health = data.health;
-            otherPlayer.sprite.setData('health', data.health);
-            
             if (otherPlayer.healthBar) {
                 updateHealthBar(otherPlayer.healthBar, otherPlayer.x, otherPlayer.y - 30, otherPlayer.health);
             }
@@ -358,6 +376,11 @@ function updateOtherPlayer(otherPlayer, data) {
         if (data.username && otherPlayer.usernameText) {
             otherPlayer.username = data.username;
             otherPlayer.usernameText.setText(data.username);
+        }
+        
+        // Update position of username text and health bar
+        if (otherPlayer.usernameText) {
+            otherPlayer.usernameText.setPosition(otherPlayer.x, otherPlayer.y - 20);
         }
         
         // Update texture based on direction
@@ -414,123 +437,139 @@ function handlePlayerHit(data) {
     try {
         // Get the current scene from the game instance
         let currentScene = null;
-        if (window.game && window.game.scene && window.game.scenes) {
-            currentScene = window.game.scene.scenes[0];
+        if (window.game && window.game.scene && window.game.scene.scenes) {
+            currentScene = window.game.scene.scenes[0]; // Get the first scene
         }
-
+        
         if (data.id === playerID) {
             // Local player was hit
-            const oldHealth = playerHealth;
             playerHealth = Math.max(0, data.health);
-            
-            // Update health bar
             if (playerHealthBar && player) {
                 updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
+                playerHealthBar.setDepth(999); // Ensure high depth
             }
             
-            // Only show hit effects if health decreased
-            if (playerHealth < oldHealth) {
-                // Visual effects
-                if (player) {
-                    player.setTint(0xff0000);
-                    setTimeout(() => {
-                        if (player.active) player.clearTint();
-                    }, 200);
-                }
+            // Flash player red to indicate damage
+            if (player) {
+                player.setTint(0xff0000);
+                setTimeout(() => {
+                    if (player.active) {
+                        player.clearTint();
+                    }
+                }, 200);
+            }
+            
+            // Create blood effect if we have a scene
+            if (currentScene) {
+                const blood = currentScene.add.circle(player.x, player.y, 8, 0xbb0000, 0.8);
+                blood.setDepth(101);
                 
-                if (currentScene && player) {
-                    createBloodEffect(currentScene, player.x, player.y);
-                    createDamageText(currentScene, player.x, player.y - 40);
-                }
+                // Animate blood effect
+                currentScene.tweens.add({
+                    targets: blood,
+                    alpha: 0,
+                    scale: 3,
+                    duration: 300,
+                    onComplete: () => blood.destroy()
+                });
+                
+                // Add damage text
+                const damageText = currentScene.add.text(player.x, player.y - 40, '-1', {
+                    font: '16px Arial',
+                    fill: '#ff0000',
+                    stroke: '#000000',
+                    strokeThickness: 3
+                }).setOrigin(0.5);
+                
+                // Animate damage text
+                currentScene.tweens.add({
+                    targets: damageText,
+                    y: damageText.y - 30,
+                    alpha: 0,
+                    duration: 800,
+                    onComplete: () => damageText.destroy()
+                });
             }
             
-            // Set invulnerability flag if provided
-            if (data.isInvulnerable) {
-                player.isInvulnerable = true;
+            if (playerHealth <= 0 && player) {
+                // Player died
+                player.setTint(0xff0000);
+                setTimeout(() => {
+                    playerHealth = 10;
+                    if (playerHealthBar && player) {
+                        updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
+                    }
+                    player.clearTint();
+                    player.setPosition(Math.random() * 800, Math.random() * 600);
+                }, 2000);
             }
-        } else {
+        } else if (data.id && otherPlayers[data.id]) {
             // Other player was hit
             const otherPlayer = otherPlayers[data.id];
-            if (!otherPlayer) return;
-            
-            const oldHealth = otherPlayer.health;
             otherPlayer.health = Math.max(0, data.health);
             
-            // Update health bar
+            // Make sure we use the sprite position for the health bar
             if (otherPlayer.healthBar && otherPlayer.sprite) {
                 updateHealthBar(otherPlayer.healthBar, otherPlayer.sprite.x, otherPlayer.sprite.y - 30, otherPlayer.health);
+                otherPlayer.healthBar.setDepth(999); // Ensure high depth
             }
             
-            // Only show hit effects if health decreased
-            if (otherPlayer.health < oldHealth) {
-                // Visual effects
-                if (otherPlayer.sprite) {
-                    otherPlayer.sprite.setTint(0xff0000);
-                    setTimeout(() => {
-                        if (otherPlayer.sprite && otherPlayer.sprite.active) {
-                            otherPlayer.sprite.clearTint();
-                        }
-                    }, 200);
-                }
+            // Flash the player red
+            if (otherPlayer.sprite) {
+                otherPlayer.sprite.setTint(0xff0000);
+                setTimeout(() => {
+                    if (otherPlayer.sprite && otherPlayer.sprite.active) {
+                        otherPlayer.sprite.clearTint();
+                    }
+                }, 200);
+            }
+            
+            // Create blood effect if we have a scene
+            if (currentScene && otherPlayer.sprite) {
+                const blood = currentScene.add.circle(otherPlayer.sprite.x, otherPlayer.sprite.y, 8, 0xbb0000, 0.8);
+                blood.setDepth(101);
                 
-                if (currentScene && otherPlayer.sprite) {
-                    createBloodEffect(currentScene, otherPlayer.sprite.x, otherPlayer.sprite.y);
-                    createDamageText(currentScene, otherPlayer.sprite.x, otherPlayer.sprite.y - 40);
-                }
+                // Animate blood effect
+                currentScene.tweens.add({
+                    targets: blood,
+                    alpha: 0,
+                    scale: 3,
+                    duration: 300,
+                    onComplete: () => blood.destroy()
+                });
+                
+                // Add damage text
+                const damageText = currentScene.add.text(otherPlayer.sprite.x, otherPlayer.sprite.y - 40, '-1', {
+                    font: '16px Arial',
+                    fill: '#ff0000',
+                    stroke: '#000000',
+                    strokeThickness: 3
+                }).setOrigin(0.5);
+                
+                // Animate damage text
+                currentScene.tweens.add({
+                    targets: damageText,
+                    y: damageText.y - 30,
+                    alpha: 0,
+                    duration: 800,
+                    onComplete: () => damageText.destroy()
+                });
             }
             
-            // Set invulnerability flag if provided
-            if (data.isInvulnerable && otherPlayer.sprite) {
-                otherPlayer.isInvulnerable = true;
+            if (otherPlayer.health <= 0 && otherPlayer.sprite) {
+                otherPlayer.sprite.setTint(0xff0000);
+                setTimeout(() => {
+                    otherPlayer.health = 10;
+                    if (otherPlayer.healthBar && otherPlayer.sprite) {
+                        updateHealthBar(otherPlayer.healthBar, otherPlayer.sprite.x, otherPlayer.sprite.y - 30, otherPlayer.health);
+                    }
+                    otherPlayer.sprite.clearTint();
+                }, 2000);
             }
         }
     } catch (error) {
         console.error('Error in handlePlayerHit:', error);
     }
-}
-
-/**
- * Create a blood effect at the specified position
- * @param {Phaser.Scene} scene - The current scene
- * @param {number} x - The x coordinate
- * @param {number} y - The y coordinate
- */
-function createBloodEffect(scene, x, y) {
-    const blood = scene.add.circle(x, y, 8, 0xbb0000, 0.8);
-    blood.setDepth(101);
-    
-    // Animate blood effect
-    scene.tweens.add({
-        targets: blood,
-        alpha: 0,
-        scale: 3,
-        duration: 300,
-        onComplete: () => blood.destroy()
-    });
-}
-
-/**
- * Create a damage text effect at the specified position
- * @param {Phaser.Scene} scene - The current scene
- * @param {number} x - The x coordinate
- * @param {number} y - The y coordinate
- */
-function createDamageText(scene, x, y) {
-    const damageText = scene.add.text(x, y, '-1', {
-        font: '16px Arial',
-        fill: '#ff0000',
-        stroke: '#000000',
-        strokeThickness: 3
-    }).setOrigin(0.5);
-    
-    // Animate damage text
-    scene.tweens.add({
-        targets: damageText,
-        y: damageText.y - 30,
-        alpha: 0,
-        duration: 800,
-        onComplete: () => damageText.destroy()
-    });
 }
 
 /**
@@ -573,6 +612,22 @@ function createOtherPlayer(scene, data) {
         
         console.log('Creating other player:', data.id, data);
         
+        // Make sure all animations are created first
+        if (!scene.anims.exists('run_left')) {
+            console.log('Creating animations for players');
+            createPlayerAnimations(scene);
+            
+            // Verify animations were created
+            const animKeys = ['run_left', 'run_right', 'run_up', 'run_down', 'run_leftup', 'run_leftdown', 'run_rightup', 'run_rightdown',
+                            'idle_front', 'idle_back', 'idle_left', 'idle_right'];
+            const missingAnims = animKeys.filter(key => !scene.anims.exists(key));
+            if (missingAnims.length > 0) {
+                console.error('Failed to create some animations:', missingAnims);
+            } else {
+                console.log('All animations created successfully');
+            }
+        }
+        
         // Create a container for this player's objects
         otherPlayers[data.id] = {
             id: data.id,
@@ -581,10 +636,7 @@ function createOtherPlayer(scene, data) {
             state: data.state || 'idle',
             health: data.health || 10,
             x: data.x || 400,
-            y: data.y || 300,
-            // Add target coordinates for smooth movement
-            targetX: data.x || 400,
-            targetY: data.y || 300
+            y: data.y || 300
         };
         
         // Create the player sprite with animation
@@ -592,14 +644,12 @@ function createOtherPlayer(scene, data) {
         
         // If the texture failed to load, use the fallback
         if (!otherPlayers[data.id].sprite.texture.key || otherPlayers[data.id].sprite.texture.key === '__MISSING') {
+            console.warn(`Texture 'player_idle_front' failed to load for player ${data.id}, using fallback`);
             otherPlayers[data.id].sprite.setTexture('character_fallback');
         }
         
         // Set player properties
         otherPlayers[data.id].sprite.id = data.id;
-        // Store important data in the sprite's data manager for collision handling
-        otherPlayers[data.id].sprite.setData('id', data.id);
-        otherPlayers[data.id].sprite.setData('health', otherPlayers[data.id].health);
         otherPlayers[data.id].sprite.setScale(2.1);
         otherPlayers[data.id].sprite.setTint(0xff0000); // Tint other players red to distinguish them
         
@@ -616,19 +666,10 @@ function createOtherPlayer(scene, data) {
             align: 'center'
         }).setOrigin(0.5);
         
-        // Make sure username text is visible
-        otherPlayers[data.id].usernameText.setVisible(true);
-        otherPlayers[data.id].usernameText.setActive(true);
-        otherPlayers[data.id].usernameText.setDepth(100); // Ensure text is on top
-        
         // Add health bar
         otherPlayers[data.id].healthBar = scene.add.graphics();
-        // Set depth to ensure it's visible on top of other elements
-        otherPlayers[data.id].healthBar.setDepth(99);
+        otherPlayers[data.id].healthBar.setDepth(999); // Set high depth
         updateHealthBar(otherPlayers[data.id].healthBar, data.x, data.y - 30, otherPlayers[data.id].health);
-        
-        // Store reference to health bar in sprite data
-        otherPlayers[data.id].sprite.setData('healthBar', otherPlayers[data.id].healthBar);
         
         // Add collision with obstacles
         if (obstacles) {
@@ -640,6 +681,11 @@ function createOtherPlayer(scene, data) {
         
         // Update texture based on direction
         updateOtherPlayerTexture(otherPlayers[data.id]);
+        
+        // Request player info if username is not provided
+        if (!data.username) {
+            socket.emit('request_player_info', { id: data.id });
+        }
         
         console.log('Successfully created other player:', data.id);
         return otherPlayers[data.id];
@@ -668,7 +714,7 @@ function handleWebSocketMessage(message) {
             currentScene = window.game.scene.scenes[0]; // Get the first scene, assuming it's our main scene
         }
         
-        if (!currentScene && message.type !== 'playerID') {
+        if (!currentScene) {
             console.error('No valid scene found for handling message:', message);
             return;
         }
@@ -678,37 +724,14 @@ function handleWebSocketMessage(message) {
                 playerID = message.data.id;
                 console.log('Received player ID:', playerID);
                 
-                // Send player info if player exists
+                // Send player info
                 if (player) {
                     sendWebSocketMessage('player_info', {
                         id: playerID,
                         username: playerUsername,
                         x: player.x,
-                        y: player.y,
-                        direction: playerDirection,
-                        state: playerState
+                        y: player.y
                     });
-                } else {
-                    // Store ID to use when player is created
-                    console.log('Player not yet created, storing ID for later use');
-                    
-                    // If we're in the create function (currentScene exists but player doesn't),
-                    // we can set up a timer to send player info once player is created
-                    if (currentScene) {
-                        currentScene.time.delayedCall(500, () => {
-                            if (player) {
-                                console.log('Player now exists, sending delayed player info');
-                                sendWebSocketMessage('player_info', {
-                                    id: playerID,
-                                    username: playerUsername,
-                                    x: player.x,
-                                    y: player.y,
-                                    direction: playerDirection,
-                                    state: playerState
-                                });
-                            }
-                        });
-                    }
                 }
                 break;
                 
@@ -777,95 +800,7 @@ function handleWebSocketMessage(message) {
                 
             case 'playerHit':
             case 'player_hit':
-                console.log('Player hit message received:', message.data);
                 handlePlayerHit(message.data);
-                break;
-                
-            case 'playerDied':
-                console.log('Player died:', message.data);
-                if (message.data.id === playerID) {
-                    // Local player died
-                    console.log('Local player died and will respawn');
-                    
-                    // Start invulnerability period with blinking effect
-                    if (player) {
-                        player.isInvulnerable = true;
-                        
-                        // Add blinking effect for invulnerability duration
-                        startBlinkingEffect(player, message.data.invulnerableDuration || 5000);
-                        
-                        // Show respawn text
-                        if (currentScene) {
-                            const respawnText = currentScene.add.text(player.x, player.y - 60, 'RESPAWNED (INVULNERABLE)', {
-                                font: '18px Arial',
-                                fill: '#00ff00',
-                                stroke: '#000000',
-                                strokeThickness: 3
-                            }).setOrigin(0.5);
-                            
-                            // Animate respawn text
-                            currentScene.tweens.add({
-                                targets: respawnText,
-                                y: respawnText.y - 40,
-                                alpha: 0,
-                                duration: 1500,
-                                onComplete: () => respawnText.destroy()
-                            });
-                        }
-                    }
-                } else if (otherPlayers[message.data.id]) {
-                    // Other player died
-                    console.log('Other player died and will respawn:', message.data.id);
-                    
-                    // Start invulnerability period with blinking effect
-                    if (otherPlayers[message.data.id].sprite) {
-                        otherPlayers[message.data.id].isInvulnerable = true;
-                        
-                        // Add blinking effect for invulnerability duration
-                        startBlinkingEffect(otherPlayers[message.data.id].sprite, message.data.invulnerableDuration || 5000);
-                        
-                        // Show respawn text
-                        if (currentScene && otherPlayers[message.data.id].sprite) {
-                            const respawnText = currentScene.add.text(
-                                otherPlayers[message.data.id].sprite.x, 
-                                otherPlayers[message.data.id].sprite.y - 60, 
-                                'RESPAWNED (INVULNERABLE)', {
-                                font: '18px Arial',
-                                fill: '#00ff00',
-                                stroke: '#000000',
-                                strokeThickness: 3
-                            }).setOrigin(0.5);
-                            
-                            // Animate respawn text
-                            currentScene.tweens.add({
-                                targets: respawnText,
-                                y: respawnText.y - 40,
-                                alpha: 0,
-                                duration: 1500,
-                                onComplete: () => respawnText.destroy()
-                            });
-                        }
-                    }
-                }
-                break;
-            
-            case 'playerVulnerable':
-                console.log('Player is now vulnerable:', message.data);
-                if (message.data.id === playerID) {
-                    // Local player is no longer invulnerable
-                    if (player) {
-                        player.isInvulnerable = false;
-                        player.clearAlpha(); // Stop blinking effect
-                        player.setAlpha(1);  // Ensure full visibility
-                    }
-                } else if (otherPlayers[message.data.id]) {
-                    // Other player is no longer invulnerable
-                    if (otherPlayers[message.data.id].sprite) {
-                        otherPlayers[message.data.id].isInvulnerable = false;
-                        otherPlayers[message.data.id].sprite.clearAlpha(); // Stop blinking effect
-                        otherPlayers[message.data.id].sprite.setAlpha(1);  // Ensure full visibility
-                    }
-                }
                 break;
                 
             default:
@@ -874,38 +809,6 @@ function handleWebSocketMessage(message) {
     } catch (error) {
         console.error('Error in handleWebSocketMessage:', error, message);
     }
-}
-
-/**
- * Start blinking effect on a sprite for the given duration
- * @param {Phaser.GameObjects.Sprite} sprite - The sprite to apply the effect to
- * @param {number} duration - The duration of the effect in milliseconds
- */
-function startBlinkingEffect(sprite, duration) {
-    if (!sprite || !sprite.scene) return;
-    
-    // Get the scene from the sprite
-    const scene = sprite.scene;
-    
-    // Clear any existing tweens on the sprite
-    scene.tweens.killTweensOf(sprite);
-    
-    // Set up the blinking tween
-    const blinkingTween = scene.tweens.add({
-        targets: sprite,
-        alpha: 0.3,
-        duration: 200,
-        yoyo: true,
-        repeat: Math.floor(duration / 400), // 400ms per full cycle (200ms * 2 for yoyo)
-        onComplete: () => {
-            // Ensure the sprite is fully visible when done
-            sprite.setAlpha(1);
-            sprite.isInvulnerable = false;
-        }
-    });
-    
-    // Return the tween in case we need to reference it later
-    return blinkingTween;
 }
 
 // Wait for the DOM to be fully loaded
@@ -948,106 +851,73 @@ function connectWebSocket() {
         }
     });
 
-    // Determine if we're running on Netlify or other deployment
-    const isNetlify = window.location.hostname.includes('netlify.app');
-    const isLocalhost = window.location.hostname === 'localhost';
-    
-    // Configure WebSocket URL based on environment
-    let wsUrl;
-    
-    if (isLocalhost) {
-        // Local development
-        wsUrl = 'ws://localhost:3000';
-    } else if (isNetlify) {
-        // When using Netlify, connect to our Railway server
-        wsUrl = 'wss://your-project-name.railway.app'; // IMPORTANT: Replace with your actual Railway app URL
-    } else {
-        // Default case for other hosting
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProtocol}//${window.location.host}`;
-    }
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = window.location.hostname === 'localhost'
+        ? `ws://localhost:3000/.netlify/functions/websocket`
+        : `${wsProtocol}//${window.location.host}/.netlify/functions/websocket`;
 
     console.log('Attempting WebSocket connection to:', wsUrl);
     updateConnectionStatus('Connecting...', '#FF9800');
 
-    try {
-        socket = new WebSocket(wsUrl);
+    socket = new WebSocket(wsUrl);
 
-        socket.onopen = () => {
-            console.log('WebSocket connected successfully');
-            updateConnectionStatus('Connected', '#4CAF50');
-            reconnectAttempts = 0;
-            isSocketInitialized = true;
+    socket.onopen = () => {
+        console.log('WebSocket connected successfully');
+        updateConnectionStatus('Connected', '#4CAF50');
+        reconnectAttempts = 0;
+        isSocketInitialized = true;
 
-            if (reconnectTimeout) {
-                clearTimeout(reconnectTimeout);
-                reconnectTimeout = null;
-            }
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
 
-            // Reset player ID on new connection to ensure we get a fresh one
-            playerID = null;
+        // Reset player ID on new connection to ensure we get a fresh one
+        playerID = null;
 
-            // Server will send us a new player ID, then we'll send our player info in handleWebSocketMessage
-        };
+        // The server will send us a new player ID, then we'll send our player info
+    };
 
-        socket.onclose = (event) => {
-            console.log('WebSocket disconnected:', event.code, event.reason);
-            updateConnectionStatus('Disconnected', '#f44336');
-            isSocketInitialized = false;
-            socket = null;
+    socket.onclose = (event) => {
+        console.log('WebSocket disconnected:', event.code, event.reason);
+        updateConnectionStatus('Disconnected', '#f44336');
+        isSocketInitialized = false;
+        socket = null;
 
-            if (reconnectAttempts < maxReconnectAttempts) {
-                reconnectAttempts++;
-                updateConnectionStatus(`Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`, '#FF9800');
-
-                if (reconnectTimeout) {
-                    clearTimeout(reconnectTimeout);
-                }
-
-                reconnectTimeout = setTimeout(() => {
-                    console.log(`Attempting reconnection ${reconnectAttempts}/${maxReconnectAttempts}`);
-                    connectWebSocket();
-                }, reconnectDelay);
-            } else {
-                updateConnectionStatus('Failed to connect - Please refresh', '#f44336');
-            }
-        };
-
-        socket.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            updateConnectionStatus('Error', '#f44336');
-        };
-
-        socket.onmessage = (event) => {
-            try {
-                const message = JSON.parse(event.data);
-                if (typeof handleWebSocketMessage === 'function') {
-                    handleWebSocketMessage(message);
-                } else {
-                    console.error('Error: handleWebSocketMessage function is not defined');
-                }
-            } catch (error) {
-                console.error('Error parsing WebSocket message:', error);
-            }
-        };
-    } catch (error) {
-        console.error('Error creating WebSocket connection:', error);
-        updateConnectionStatus('Connection Error', '#f44336');
-        
-        // Attempt to reconnect if we have retries left
         if (reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
-            
+            updateConnectionStatus(`Reconnecting (${reconnectAttempts}/${maxReconnectAttempts})...`, '#FF9800');
+
             if (reconnectTimeout) {
                 clearTimeout(reconnectTimeout);
             }
-            
+
             reconnectTimeout = setTimeout(() => {
                 console.log(`Attempting reconnection ${reconnectAttempts}/${maxReconnectAttempts}`);
                 connectWebSocket();
             }, reconnectDelay);
+        } else {
+            updateConnectionStatus('Failed to connect - Please refresh', '#f44336');
         }
-    }
+    };
+
+    socket.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateConnectionStatus('Error', '#f44336');
+    };
+
+    socket.onmessage = (event) => {
+        try {
+            const message = JSON.parse(event.data);
+            if (typeof handleWebSocketMessage === 'function') {
+                handleWebSocketMessage(message);
+            } else {
+                console.error('Error: handleWebSocketMessage function is not defined');
+            }
+        } catch (error) {
+            console.error('Error parsing WebSocket message:', error);
+        }
+    };
 }
 
 /**
@@ -1414,8 +1284,8 @@ function startGame(username) {
         // Set properties for all bullets
         bullets.children.iterate(function(bullet) {
             if (bullet) {
-                bullet.setScale(0.6); // Doubled from 0.3
-                bullet.scaleY = 0.4; // Doubled from 0.2
+                bullet.setScale(0.3);
+                bullet.scaleY = 0.2; // Make bullets thinner
                 bullet.setTint(0xff0000);
                 bullet.setDepth(100);
                 
@@ -1494,6 +1364,7 @@ function startGame(username) {
         
         // Add health bar above username
         playerHealthBar = this.add.graphics();
+        playerHealthBar.setDepth(999); // Ensure it's on top of everything
         updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
         
         // Add collision between player and obstacles
@@ -1620,8 +1491,31 @@ function startGame(username) {
             }
         });
         
-        // Handle player identification when we receive an ID from the server
-        // This will be called from handleWebSocketMessage when message type is 'playerID'
+        // Get the player's socket ID when connected
+        socket.onopen = () => {
+            playerID = socket.id;
+            console.log('Connected with ID:', playerID);
+            
+            // Send player info to server
+            sendWebSocketMessage('player_info', {
+                id: playerID,
+                username: playerUsername,
+                x: player.x,
+                y: player.y
+            });
+        };
+        
+        // Single WebSocket message handler - ONLY ONE message handler!
+        socket.onmessage = (event) => {
+            try {
+                const message = JSON.parse(event.data);
+                handleWebSocketMessage(message);
+            } catch (error) {
+                console.error('Error parsing WebSocket message:', error);
+            }
+        };
+        
+        // REMOVE all duplicate socket.onmessage handlers
         
         // Handle mouse clicks for movement or editor
         this.input.on('pointerdown', (pointer) => {
@@ -1777,7 +1671,12 @@ function startGame(username) {
                 otherPlayer.usernameText.setText(data.username);
             }
             
-            // Update texture based on direction
+            // Update position of username text and health bar
+            if (otherPlayer.usernameText) {
+                    otherPlayer.usernameText.setPosition(otherPlayer.x, otherPlayer.y - 20);
+                }
+                
+                // Update texture based on direction
             updateOtherPlayerTexture(otherPlayer);
             } catch (error) {
                 console.error('Error in updateOtherPlayer:', error);
@@ -1888,6 +1787,71 @@ function startGame(username) {
                 console.error('Error parsing WebSocket message:', error);
             }
         };
+
+        // Handle player hit events
+        socket.on('playerHit', (data) => {
+            console.log('Player hit event received:', data);
+            
+            // Call the handler function to update health
+            handlePlayerHit(data);
+            
+            // If it's the local player who got hit
+            if (data.id === playerID) {
+                // Flash the player red
+                player.setTint(0xff0000);
+                setTimeout(() => {
+                    player.clearTint();
+                }, 200);
+                
+                // Show damage text
+                const damageText = this.add.text(player.x, player.y - 40, '-1', {
+                    font: '16px Arial',
+                    fill: '#ff0000',
+                    stroke: '#000000',
+                    strokeThickness: 3
+                }).setOrigin(0.5);
+                
+                // Animate damage text
+                this.tweens.add({
+                    targets: damageText,
+                    y: damageText.y - 30,
+                    alpha: 0,
+                    duration: 800,
+                    onComplete: () => {
+                        damageText.destroy();
+                    }
+                });
+            }
+            // If it's another player who got hit
+            else if (otherPlayers[data.id]) {
+                console.log('Other player hit, health reduced to:', data.health);
+                
+                // Flash the player red
+                otherPlayers[data.id].sprite.setTint(0xff0000);
+                setTimeout(() => {
+                    if (otherPlayers[data.id] && otherPlayers[data.id].sprite) {
+                        otherPlayers[data.id].sprite.clearTint();
+                    }
+                }, 200);
+                
+                // Show damage text
+                const damageText = this.add.text(otherPlayers[data.id].sprite.x, otherPlayers[data.id].sprite.y - 40, '-1', {
+                    font: '16px Arial',
+                    fill: '#ff0000',
+                    stroke: '#000000',
+                    strokeThickness: 3
+                }).setOrigin(0.5);
+                
+                // Animate damage text
+                this.tweens.add({
+                    targets: damageText,
+                    y: damageText.y - 30,
+                    alpha: 0,
+                    duration: 800,
+                    onComplete: () => damageText.destroy()
+                });
+            }
+        });
     }
     
     /**
@@ -2787,7 +2751,7 @@ function startGame(username) {
             bullet.setVisible(true);
             bullet.shooterId = shooterId;
             bullet.bulletId = bulletId;
-            bullet.setScale(0.6); // Doubled from 0.3
+            bullet.setScale(0.3);
             bullet.setTint(0xff0000);
             bullet.setDepth(100);
             
@@ -2807,7 +2771,7 @@ function startGame(username) {
             
             // Set bullet rotation and appearance
             bullet.rotation = angle;
-            bullet.scaleY = 0.4; // Doubled from 0.2
+            bullet.scaleY = 0.2;
             
             // Calculate velocity components
             const vx = bulletSpeed * Math.cos(angle);
@@ -2880,16 +2844,16 @@ function startGame(username) {
             // Handle collisions with players
             if (bullet.shooterId !== playerID) {
                 // Add collision with local player if bullet is from another player
-                scene.physics.add.overlap(bullet, player, (bulletSprite, playerSprite) => {
-                    handleBulletPlayerCollision(scene, bulletSprite, playerSprite);
+                scene.physics.add.overlap(bullet, player, (bullet, hitPlayer) => {
+                    handleBulletPlayerCollision(scene, bullet, hitPlayer);
                 }, null, scene);
             }
 
             // Add collision with other players
             Object.values(otherPlayers).forEach(otherPlayer => {
-                if (otherPlayer && otherPlayer.sprite && otherPlayer.sprite.active && otherPlayer.id !== bullet.shooterId) {
-                    scene.physics.add.overlap(bullet, otherPlayer.sprite, (bulletSprite, playerSprite) => {
-                        handleBulletPlayerCollision(scene, bulletSprite, playerSprite);
+                if (otherPlayer && otherPlayer.active && otherPlayer.id !== bullet.shooterId) {
+                    scene.physics.add.overlap(bullet, otherPlayer, (bullet, hitPlayer) => {
+                        handleBulletPlayerCollision(scene, bullet, hitPlayer);
                     }, null, scene);
                 }
             });
@@ -2952,7 +2916,7 @@ function startGame(username) {
                 return;
             }
             
-            // Check if player is invulnerable (can't shoot during this time)
+            // Check if player is invulnerable (can't shoot while invulnerable)
             if (player.isInvulnerable) {
                 console.log('Cannot shoot while invulnerable');
                 return;
@@ -2985,12 +2949,12 @@ function startGame(username) {
             // Emit bullet creation to server BEFORE creating the local bullet
             sendWebSocketMessage('playerShoot', {
                 id: playerID,
-                x: bulletX,
-                y: bulletY,
-                direction: playerDirection,
-                bulletId: bulletId
-            });
-            
+                    x: bulletX,
+                    y: bulletY,
+                    direction: playerDirection,
+                    bulletId: bulletId
+                });
+                
             // Create the local bullet for immediate rendering
             createBullet(scene, bulletX, bulletY, playerDirection, playerID, bulletId);
         } catch (error) {
@@ -3081,7 +3045,7 @@ function startGame(username) {
                 return;
             }
             
-            console.log('Creating other player:', data.id, data);
+        console.log('Creating other player:', data.id, data);
             
             // Create a container for this player's objects
             otherPlayers[data.id] = {
@@ -3091,56 +3055,41 @@ function startGame(username) {
                 state: data.state || 'idle',
                 health: data.health || 10,
                 x: data.x || 400,
-                y: data.y || 300,
-                // Add target coordinates for smooth movement
-                targetX: data.x || 400,
-                targetY: data.y || 300
+                y: data.y || 300
             };
         
-            // Create the player sprite with animation
+        // Create the player sprite with animation
             otherPlayers[data.id].sprite = scene.physics.add.sprite(data.x, data.y, 'player_idle_front', 0);
         
-            // If the texture failed to load, use the fallback
+        // If the texture failed to load, use the fallback
             if (!otherPlayers[data.id].sprite.texture.key || otherPlayers[data.id].sprite.texture.key === '__MISSING') {
                 otherPlayers[data.id].sprite.setTexture('character_fallback');
-            }
+        }
         
-            // Set player properties
+        // Set player properties
             otherPlayers[data.id].sprite.id = data.id;
-            // Store important data in the sprite's data manager for collision handling
-            otherPlayers[data.id].sprite.setData('id', data.id);
-            otherPlayers[data.id].sprite.setData('health', otherPlayers[data.id].health);
             otherPlayers[data.id].sprite.setScale(2.1);
             otherPlayers[data.id].sprite.setTint(0xff0000); // Tint other players red to distinguish them
         
-            // Force visibility
+        // Force visibility
             otherPlayers[data.id].sprite.setVisible(true);
             otherPlayers[data.id].sprite.setActive(true);
         
-            // Add username text above player
-            otherPlayers[data.id].usernameText = scene.add.text(data.x, data.y - 20, data.username || 'Player', {
-                font: '14px Arial',
-                fill: '#ffffff',
-                stroke: '#000000',
-                strokeThickness: 3,
-                align: 'center'
-            }).setOrigin(0.5);
-            
-            // Make sure username text is visible
-            otherPlayers[data.id].usernameText.setVisible(true);
-            otherPlayers[data.id].usernameText.setActive(true);
-            otherPlayers[data.id].usernameText.setDepth(100); // Ensure text is on top
+        // Add username text above player
+        otherPlayers[data.id].usernameText = scene.add.text(data.x, data.y - 20, data.username || 'Player', {
+            font: '14px Arial',
+            fill: '#ffffff',
+            stroke: '#000000',
+            strokeThickness: 3,
+            align: 'center'
+        }).setOrigin(0.5);
         
-            // Add health bar
-            otherPlayers[data.id].healthBar = scene.add.graphics();
-            // Set depth to ensure it's visible on top of other elements
-            otherPlayers[data.id].healthBar.setDepth(99);
-            updateHealthBar(otherPlayers[data.id].healthBar, data.x, data.y - 30, otherPlayers[data.id].health);
-            
-            // Store reference to health bar in sprite data
-            otherPlayers[data.id].sprite.setData('healthBar', otherPlayers[data.id].healthBar);
+        // Add health bar
+        otherPlayers[data.id].healthBar = scene.add.graphics();
+        otherPlayers[data.id].healthBar.setDepth(999); // Set high depth
+        updateHealthBar(otherPlayers[data.id].healthBar, data.x, data.y - 30, otherPlayers[data.id].health);
         
-            // Add collision with obstacles
+        // Add collision with obstacles
             if (obstacles) {
                 scene.physics.add.collider(otherPlayers[data.id].sprite, obstacles);
             }
@@ -3148,11 +3097,11 @@ function startGame(username) {
             // Add collision with bullets
             updateBulletCollisionForPlayer(scene, otherPlayers[data.id]);
         
-            // Update texture based on direction
-            updateOtherPlayerTexture(otherPlayers[data.id]);
+        // Update texture based on direction
+        updateOtherPlayerTexture(otherPlayers[data.id]);
         
             console.log('Successfully created other player:', data.id);
-            return otherPlayers[data.id];
+        return otherPlayers[data.id];
         } catch (error) {
             console.error('Error creating other player:', error);
             return null;
@@ -3204,6 +3153,10 @@ function startGame(username) {
      * @param {number} health - The health value (0-10)
      */
     function updateHealthBar(graphics, x, y, health) {
+        if (!graphics || !graphics.active) {
+            return;
+        }
+        
         // Clear previous graphics
         graphics.clear();
         
@@ -3227,6 +3180,9 @@ function startGame(username) {
         // Draw health bar
         graphics.fillStyle(color, 1);
         graphics.fillRect(x - 25, y - 5, 50 * healthPercent, 10);
+        
+        // Ensure the healthbar has high depth to be visible
+        graphics.setDepth(999);
     }
 
     /**
@@ -3364,14 +3320,12 @@ function startGame(username) {
         }
         
         // Update health bar position
-        if (playerHealthBar) {
+        if (playerHealthBar && player && player.active) {
             updateHealthBar(playerHealthBar, player.x, player.y - 30, playerHealth);
         }
         
         // Update other players with smooth movement
         Object.values(otherPlayers).forEach(otherPlayer => {
-            if (!otherPlayer.sprite || !otherPlayer.sprite.active) return;
-            
             if (otherPlayer.targetX !== undefined && otherPlayer.targetY !== undefined) {
                 // Calculate distance to target
                 const distance = Phaser.Math.Distance.Between(
@@ -3388,10 +3342,6 @@ function startGame(username) {
                     otherPlayer.x = Phaser.Math.Linear(otherPlayer.x, otherPlayer.targetX, lerpFactor);
                     otherPlayer.y = Phaser.Math.Linear(otherPlayer.y, otherPlayer.targetY, lerpFactor);
                     
-                    // Update sprite position to match
-                    otherPlayer.sprite.x = otherPlayer.x;
-                    otherPlayer.sprite.y = otherPlayer.y;
-                    
                     // Update direction based on movement
                     const angle = Phaser.Math.Angle.Between(
                         otherPlayer.x, otherPlayer.y,
@@ -3401,28 +3351,23 @@ function startGame(username) {
                     
                     // Update texture
                     updateOtherPlayerTexture(otherPlayer);
-                } else {
+        } else {
                     // Stop at target
                     otherPlayer.x = otherPlayer.targetX;
                     otherPlayer.y = otherPlayer.targetY;
-                    
-                    // Update sprite position
-                    otherPlayer.sprite.x = otherPlayer.x;
-                    otherPlayer.sprite.y = otherPlayer.y;
-                    
                     otherPlayer.state = 'idle';
                     updateOtherPlayerTexture(otherPlayer);
-                }
             }
             
-            // Always update username text and health bar positions
+            // Update username text position
             if (otherPlayer.usernameText) {
                 otherPlayer.usernameText.setPosition(otherPlayer.x, otherPlayer.y - 20);
             }
             
-            // Update health bar position - always do this in the update loop
-            if (otherPlayer.healthBar) {
-                updateHealthBar(otherPlayer.healthBar, otherPlayer.x, otherPlayer.y - 30, otherPlayer.health);
+            // Update health bar position
+            if (otherPlayer.healthBar && otherPlayer.sprite && otherPlayer.sprite.active) {
+                updateHealthBar(otherPlayer.healthBar, otherPlayer.sprite.x, otherPlayer.sprite.y - 30, otherPlayer.health);
+                otherPlayer.healthBar.setDepth(999); // Ensure high depth in each frame
             }
         });
         
@@ -3747,7 +3692,7 @@ function startGame(username) {
             
             // Skip collision if player is invulnerable
             if ((isLocalPlayer && player.isInvulnerable) || 
-                (!isLocalPlayer && hitPlayer.getData && hitPlayer.getData('isInvulnerable'))) {
+                (!isLocalPlayer && hitPlayer.getData('isInvulnerable'))) {
                 console.log('Player is invulnerable, ignoring bullet hit');
                 bullet.destroy();
                 return;
@@ -3755,7 +3700,7 @@ function startGame(username) {
             
             // Get current health
             let health = isLocalPlayer ? playerHealth : 
-                (hitPlayer.getData && hitPlayer.getData('health') || 10);
+                (hitPlayer.getData('health') || 10);
             
             // Reduce health by 1
             health = Math.max(0, health - 1);
@@ -3766,7 +3711,7 @@ function startGame(username) {
                 if (playerHealthBar) {
                     updateHealthBar(playerHealthBar, hitPlayer.x, hitPlayer.y - 30, playerHealth);
                 }
-            } else if (hitPlayer.getData && hitPlayer.getData('otherPlayerRef')) {
+            } else if (hitPlayer.getData('otherPlayerRef')) {
                 const otherPlayerRef = hitPlayer.getData('otherPlayerRef');
                 otherPlayerRef.health = health;
                 if (otherPlayerRef.healthBar) {
@@ -3825,24 +3770,42 @@ function startGame(username) {
             // Destroy the bullet
             bullet.destroy();
 
-            // Check if player died (health <= 0) - server will handle respawn
+            // Check if player died (health <= 0)
             if (health <= 0) {
                 // Emit death event
                 sendWebSocketMessage('playerDied', {
                     id: isLocalPlayer ? playerID : hitPlayer.id
                 });
+
+                // Reset health to full (server will handle this, but we update locally for immediate feedback)
+                if (isLocalPlayer) {
+                    playerHealth = 10;
+                    updateHealthBar(playerHealthBar, hitPlayer.x, hitPlayer.y - 30, 10);
+                } else if (hitPlayer.getData('otherPlayerRef')) {
+                    const otherPlayerRef = hitPlayer.getData('otherPlayerRef');
+                    otherPlayerRef.health = 10;
+                    updateHealthBar(otherPlayerRef.healthBar, hitPlayer.x, hitPlayer.y - 30, 10);
+                }
+
+                // Show respawn effect
+                const respawnText = scene.add.text(hitPlayer.x, hitPlayer.y - 60, 'RESPAWNED', {
+                    font: '18px Arial',
+                    fill: '#00ff00',
+                    stroke: '#000000',
+                    strokeThickness: 3
+                }).setOrigin(0.5);
+
+                // Animate respawn text
+                scene.tweens.add({
+                    targets: respawnText,
+                    y: respawnText.y - 40,
+                    alpha: 0,
+                    duration: 1500,
+                    onComplete: () => respawnText.destroy()
+                });
             }
+
         } catch (error) {
             console.error('Error in handleBulletPlayerCollision:', error);
         }
     }
-
-    // Use the global handleWebSocketMessage function instead of defining it here
-    
-    // Helper function to send WebSocket messages
-    function sendWebSocketMessage(type, data) {
-        if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type, data }));
-        }
-    }
-} 

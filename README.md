@@ -1,57 +1,139 @@
-# Character Movement Game
+# Multiplayer Browser Game with WebSocket
 
-A simple game where you can move a character around with mouse clicks on a map. The character will animate based on the direction of movement.
+This is a multiplayer browser-based game using Phaser and WebSockets for real-time communication.
 
-## Features
+## Deployment Guide
 
-- Click-to-move character control
-- Character animations based on movement direction (walking up, down, left, right)
-- Multiplayer support via Socket.IO
-- Map background
+### Important Note About WebSockets on Netlify
 
-## Prerequisites
+Netlify Functions are serverless functions that run in a stateless environment. They don't support long-lived connections like WebSockets natively. For a multiplayer game, you need to deploy a separate WebSocket server.
 
-- Node.js (v12 or higher)
-- npm (v6 or higher)
+### Deployment Steps
 
-## Installation
+1. **Deploy the WebSocket Server**:
+   
+   The `server.js` file contains the WebSocket server implementation. Deploy this to a service that supports long-running processes, such as:
+   
+   - Heroku
+   - Railway
+   - Render
+   - DigitalOcean
+   - AWS EC2
 
-1. Clone this repository
-2. Install dependencies:
+   Example deployment on Heroku:
+   ```bash
+   # Install Heroku CLI if you haven't already
+   npm install -g heroku
 
-```bash
-npm install
-```
+   # Login to Heroku
+   heroku login
 
-## Running the Game
+   # Create a new Heroku app
+   heroku create
 
-1. Start the server:
+   # Deploy to Heroku
+   git push heroku main
+   ```
+   
+   **Railway Deployment Instructions:**
+   
+   1. Sign up for a Railway account at [railway.app](https://railway.app/)
+   
+   2. Install the Railway CLI:
+      ```bash
+      npm i -g @railway/cli
+      ```
+   
+   3. Login to Railway from your terminal:
+      ```bash
+      railway login
+      ```
+   
+   4. Initialize a new Railway project in your repository:
+      ```bash
+      railway init
+      ```
+   
+   5. Create a new service for your WebSocket server:
+      ```bash
+      railway add
+      ```
+      
+      Select "Empty Service" when prompted for a template.
+   
+   6. Deploy your WebSocket server:
+      ```bash
+      railway up
+      ```
+   
+   7. Get your service URL:
+      ```bash
+      railway domain
+      ```
+      
+      This will give you the URL to your deployed service. Note that Railway automatically assigns HTTPS, so your WebSocket URL will start with `wss://`.
+   
+   8. You can also deploy by connecting your GitHub repository:
+      - Go to [railway.app](https://railway.app/) dashboard
+      - Click "New Project" → "Deploy from GitHub repo"
+      - Select your repository and branch
+      - Railway will automatically deploy your server
+   
+   9. Configure environment variables (if needed):
+      - Go to your project in the Railway dashboard
+      - Click on your service
+      - Click on the "Variables" tab
+      - Add any environment variables your app needs
 
-```bash
-npm start
-```
+2. **Update WebSocket Connection URL**:
+   
+   In `public/js/game.js`, update the WebSocket connection URL to point to your deployed server:
+   
+   ```javascript
+   // Change this line in connectWebSocket function:
+   wsUrl = 'wss://your-project-name.railway.app'; // Update with your Railway app URL
+   ```
 
-2. Open your browser and navigate to `http://localhost:3000`
+3. **Deploy the Frontend to Netlify**:
+   
+   - Create a Netlify account if you don't have one
+   - Connect your repository to Netlify
+   - Set the build command (if needed) and publish directory to `public`
+   - Deploy the site
 
-## How to Play
+## Local Development
 
-- Click anywhere on the map to move the character to that position
-- The character will automatically animate based on the direction of movement
-- If other players join, you'll see them as red characters moving around
+To run the game locally:
 
-## Assets
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
 
-The game uses the following assets:
-- `human.aseprite` - Character sprite with animations
-- `image.png` - Map background
+2. Start the WebSocket server:
+   ```bash
+   node server.js
+   ```
 
-## Technical Details
+3. Open your browser to http://localhost:3000
 
-- Built with Node.js and Express
-- Uses Phaser 3 for game rendering and physics
-- Socket.IO for real-time multiplayer functionality
-- Custom Aseprite parser for handling character animations
+## Game Controls
+
+- WASD or arrow keys to move
+- Click to shoot
+- Mobile controls will appear automatically on touch devices
+
+## Troubleshooting
+
+- If WebSocket connections are failing, check:
+  - CORS settings on your WebSocket server
+  - SSL/TLS certificates (wss:// requires valid SSL)
+  - Network/firewall restrictions
+
+- Common errors:
+  - "Cannot set properties of null" - Usually related to WebSocket initialization
+  - "WebSocket connection failed" - Check the server URL and ensure the server is running
 
 ## License
 
-ISC 
+This project is licensed under the MIT License - see the LICENSE file for details. 
