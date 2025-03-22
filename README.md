@@ -84,6 +84,9 @@ Netlify Functions are serverless functions that run in a stateless environment. 
       - Click on your service
       - Click on the "Variables" tab
       - Add any environment variables your app needs
+      
+      **Required Environment Variable for Cloudflare Turnstile:**
+      - `TURNSTILE_SECRET_KEY`: Your Cloudflare Turnstile secret key
 
 2. **Update WebSocket Connection URL**:
    
@@ -100,6 +103,22 @@ Netlify Functions are serverless functions that run in a stateless environment. 
    - Connect your repository to Netlify
    - Set the build command (if needed) and publish directory to `public`
    - Deploy the site
+
+## Cloudflare Turnstile Integration
+
+This game uses Cloudflare Turnstile to protect the login screen with a CAPTCHA. To configure:
+
+1. The site key `0x4AAAAAABCEsgftQ0R1Rv3F` is already set in the frontend code.
+
+2. Set up your secret key:
+   - Set the `TURNSTILE_SECRET_KEY` environment variable on your Railway deployment
+   - This key is used by the server to verify CAPTCHA responses
+
+3. If you need to use your own Turnstile keys:
+   - Register at [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/)
+   - Create a new site and get your site key and secret key
+   - Update the site key in `game.js` in the `showLoginScreen()` function
+   - Update the secret key in your Railway environment variables
 
 ## Local Development
 

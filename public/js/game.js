@@ -1092,6 +1092,21 @@ function showLoginScreen() {
     usernameInput.style.boxSizing = 'border-box';
     usernameInput.style.border = '1px solid #ccc';
     usernameInput.style.borderRadius = '5px';
+
+    // Create captcha container
+    const captchaContainer = document.createElement('div');
+    captchaContainer.id = 'captcha-container';
+    captchaContainer.style.marginBottom = '20px';
+    captchaContainer.className = 'cf-turnstile';
+    captchaContainer.dataset.sitekey = '0x4AAAAAABCEsgftQ0R1Rv3F';
+    captchaContainer.dataset.theme = 'light';
+    
+    // Create error message element
+    const errorMessage = document.createElement('div');
+    errorMessage.id = 'error-message';
+    errorMessage.style.color = 'red';
+    errorMessage.style.marginTop = '10px';
+    errorMessage.style.display = 'none';
     
     // Create login button
     const loginButton = document.createElement('button');
@@ -1104,19 +1119,69 @@ function showLoginScreen() {
     loginButton.style.cursor = 'pointer';
     
     // Add click event to login button
-    loginButton.addEventListener('click', () => {
+    loginButton.addEventListener('click', async () => {
         const username = usernameInput.value.trim();
-        if (username) {
-            // Save username to localStorage
-            localStorage.setItem('username', username);
+        if (!username) {
+            errorMessage.textContent = 'Please enter a username';
+            errorMessage.style.display = 'block';
+            return;
+        }
+        
+        // Get turnstile token
+        const token = document.querySelector('[name="cf-turnstile-response"]')?.value;
+        if (!token) {
+            errorMessage.textContent = 'Please complete the captcha';
+            errorMessage.style.display = 'block';
+            return;
+        }
+        
+        // Disable button during verification
+        loginButton.disabled = true;
+        loginButton.textContent = 'Verifying...';
+        
+        try {
+            // Verify captcha on server
+            const response = await fetch('/verify-turnstile', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ token })
+            });
             
-            // Remove login container
-            document.body.removeChild(loginContainer);
+            const data = await response.json();
             
-            // Start the game
-            startGame(username);
-        } else {
-            alert('Please enter a username');
+            if (data.success) {
+                // Save username to localStorage
+                localStorage.setItem('username', username);
+                
+                // Remove login container
+                document.body.removeChild(loginContainer);
+                
+                // Start the game
+                startGame(username);
+            } else {
+                // Show error
+                errorMessage.textContent = 'Captcha verification failed. Please try again.';
+                errorMessage.style.display = 'block';
+                
+                // Reset captcha
+                if (window.turnstile) {
+                    window.turnstile.reset();
+                }
+                
+                // Re-enable button
+                loginButton.disabled = false;
+                loginButton.textContent = 'Start Game';
+            }
+        } catch (error) {
+            console.error('Error verifying captcha:', error);
+            errorMessage.textContent = 'There was an error verifying the captcha. Please try again.';
+            errorMessage.style.display = 'block';
+            
+            // Re-enable button
+            loginButton.disabled = false;
+            loginButton.textContent = 'Start Game';
         }
     });
     
@@ -1130,6 +1195,8 @@ function showLoginScreen() {
     // Add elements to form
     loginForm.appendChild(title);
     loginForm.appendChild(usernameInput);
+    loginForm.appendChild(captchaContainer);
+    loginForm.appendChild(errorMessage);
     loginForm.appendChild(loginButton);
     
     // Add form to container
@@ -1140,6 +1207,15 @@ function showLoginScreen() {
     
     // Focus on input field
     usernameInput.focus();
+    
+    // Load Cloudflare Turnstile script
+    if (!document.querySelector('script[src="https://challenges.cloudflare.com/turnstile/v0/api.js"]')) {
+        const script = document.createElement('script');
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+        script.async = true;
+        script.defer = true;
+        document.head.appendChild(script);
+    }
 }
 
 /**

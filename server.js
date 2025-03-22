@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const path = require('path');
+const fetch = require('node-fetch');
 
 // Create the Express app
 const app = express();
@@ -9,6 +10,8 @@ const server = http.createServer(app);
 
 // Configure port for Railway compatibility
 const PORT = process.env.PORT || 3000;
+// Get Cloudflare Turnstile Secret Key from env
+const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY;
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
@@ -27,9 +30,47 @@ app.use((req, res, next) => {
   next();
 });
 
+// Parse JSON and URL-encoded form data
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 // Add a basic health check endpoint for Railway
 app.get('/health', (req, res) => {
   res.status(200).send({ status: 'ok', players: players.size });
+});
+
+// Endpoint to verify Cloudflare Turnstile
+app.post('/verify-turnstile', async (req, res) => {
+  try {
+    const { token } = req.body;
+    
+    if (!token) {
+      return res.status(400).json({ success: false, message: 'Token is missing' });
+    }
+    
+    const formData = new URLSearchParams();
+    formData.append('secret', TURNSTILE_SECRET_KEY);
+    formData.append('response', token);
+    
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      body: formData,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      return res.json({ success: true });
+    } else {
+      return res.status(400).json({ success: false, message: 'Captcha verification failed', errors: data['error-codes'] });
+    }
+  } catch (error) {
+    console.error('Error verifying turnstile:', error);
+    return res.status(500).json({ success: false, message: 'Server error' });
+  }
 });
 
 // Store player information and their WebSocket connections
@@ -312,6 +353,12 @@ function broadcastToAll(message) {
 
 // Start the server
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
     console.log(`WebSocket server ready at ws://localhost:${PORT}`);
+    if (!TURNSTILE_SECRET_KEY) {
+      console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set. Cloudflare Turnstile captcha verification will not work.');
+      console.warn('Please set the TURNSTILE_SECRET_KEY environment variable in your Railway environment variables.');
+    } else {
+      console.log('Cloudflare Turnstile is configured and ready.');
+    }
 }); 
