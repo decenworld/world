@@ -13,10 +13,30 @@ const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NOD
 
 // Configure port for Railway compatibility
 const PORT = process.env.PORT || 3000;
-// Get Cloudflare Turnstile Secret Key from env
-const TURNSTILE_SECRET_KEY = process.env.TURNSTILE_SECRET_KEY || 
-  // Only use this fake key in development for testing
-  (isDevelopment ? 'testing_mock_secret_key_for_development_only' : '');
+
+// Get Cloudflare Turnstile Secret Key from env - handle possible malformed value
+let TURNSTILE_SECRET_KEY = '';
+try {
+  // First, try to get the raw environment variable
+  const rawSecretKey = process.env.TURNSTILE_SECRET_KEY || '';
+  
+  // Clean up the value in case it has strange formatting
+  TURNSTILE_SECRET_KEY = rawSecretKey.trim()
+    .replace(/^=+/, '')  // Remove leading equals signs
+    .replace(/=+$/, '')  // Remove trailing equals signs
+    .replace(/^["']+/, '') // Remove leading quotes
+    .replace(/["']+$/, ''); // Remove trailing quotes
+  
+  // If still empty and in development, use a testing key
+  if (!TURNSTILE_SECRET_KEY && isDevelopment) {
+    TURNSTILE_SECRET_KEY = 'testing_mock_secret_key_for_development_only';
+  }
+} catch (e) {
+  console.error('Error parsing TURNSTILE_SECRET_KEY:', e);
+  if (isDevelopment) {
+    TURNSTILE_SECRET_KEY = 'testing_mock_secret_key_for_development_only';
+  }
+}
 
 // Log environment settings at startup
 console.log(`Environment: ${isDevelopment ? 'Development' : 'Production'}`);
@@ -62,7 +82,7 @@ app.post('/verify-turnstile', async (req, res) => {
     }
     
     // Development mode bypass for testing
-    if (isDevelopment && !TURNSTILE_SECRET_KEY) {
+    if (isDevelopment && TURNSTILE_SECRET_KEY === 'testing_mock_secret_key_for_development_only') {
       console.log('DEVELOPMENT MODE: Bypassing Turnstile verification');
       return res.json({ 
         success: true, 
@@ -72,11 +92,11 @@ app.post('/verify-turnstile', async (req, res) => {
     
     // Check for secret key
     if (!TURNSTILE_SECRET_KEY) {
-      console.error('TURNSTILE_SECRET_KEY is not set in environment variables');
+      console.error('TURNSTILE_SECRET_KEY is not properly set in environment variables');
       // Instead of returning 500, return a more specific error
       return res.status(400).json({ 
         success: false, 
-        message: 'Server configuration error: TURNSTILE_SECRET_KEY is not set',
+        message: 'Server configuration error: TURNSTILE_SECRET_KEY is not set or is malformed',
         errors: ['missing-input-secret']
       });
     }
@@ -446,19 +466,24 @@ server.listen(PORT, () => {
     console.log(`WebSocket server ready at ws://localhost:${PORT}`);
     
     // Log Turnstile configuration
-    if (!process.env.TURNSTILE_SECRET_KEY) {
+    console.log('=== TURNSTILE CONFIGURATION ===');
+    if (TURNSTILE_SECRET_KEY === 'testing_mock_secret_key_for_development_only') {
+      console.log('Running in development mode with mock secret key');
+      console.log('Captcha verification will be bypassed for testing purposes');
+    } else if (!TURNSTILE_SECRET_KEY) {
+      console.warn('WARNING: TURNSTILE_SECRET_KEY is not properly set');
+      console.warn('Environment variable value:', process.env.TURNSTILE_SECRET_KEY);
+      console.warn('Parsed value:', TURNSTILE_SECRET_KEY);
       if (isDevelopment) {
-        console.log('=== CAPTCHA CONFIGURATION ===');
-        console.log('Running in development mode: Using mock secret key for Turnstile');
-        console.log('Captcha verification will succeed in development mode for testing purposes.');
-        console.log('For production, set the TURNSTILE_SECRET_KEY environment variable in your Railway deployment.');
+        console.log('Running in development mode, but verification will likely fail');
       } else {
-        console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set.');
-        console.warn('Cloudflare Turnstile captcha verification will not work correctly in production.');
-        console.warn('Please set the TURNSTILE_SECRET_KEY environment variable in your Railway environment variables.');
+        console.warn('In production mode: Cloudflare Turnstile verification will fail');
       }
+      console.warn('Please set the TURNSTILE_SECRET_KEY environment variable correctly in your Railway environment variables.');
+      console.log('Format should be: TURNSTILE_SECRET_KEY=your_secret_key_here');
     } else {
-      console.log('Cloudflare Turnstile is configured and ready with secret key from environment variables.');
+      console.log('Cloudflare Turnstile is configured and ready');
+      console.log(`Secret key length: ${TURNSTILE_SECRET_KEY.length} characters`);
     }
     
     console.log('======================================');
