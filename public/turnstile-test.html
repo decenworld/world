@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Turnstile Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ccc;
+            padding: 20px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f5f5f5;
+            min-height: 100px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-top: 10px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+        }
+        #turnstile {
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Cloudflare Turnstile Test</h1>
+    
+    <div class="container">
+        <h2>1. Render Turnstile Widget</h2>
+        <div id="turnstile"></div>
+        
+        <h2>2. Test Verification</h2>
+        <button id="verify-btn" disabled>Verify Token</button>
+        
+        <h2>3. Results</h2>
+        <div id="results">Results will appear here...</div>
+    </div>
+    
+    <script>
+        let token = null;
+        const verifyBtn = document.getElementById('verify-btn');
+        const results = document.getElementById('results');
+        
+        // Turnstile callback function
+        function turnstileCallback(response) {
+            console.log('Turnstile callback received', response);
+            token = response;
+            results.innerHTML = `<p>Token received: ${token.substring(0, 20)}...</p>`;
+            verifyBtn.disabled = false;
+        }
+        
+        // When expired
+        function turnstileExpired() {
+            console.log('Turnstile token expired');
+            token = null;
+            results.innerHTML += `<p>Token expired. Please solve the captcha again.</p>`;
+            verifyBtn.disabled = true;
+        }
+        
+        // When error
+        function turnstileError() {
+            console.log('Turnstile error');
+            results.innerHTML += `<p>Error loading Turnstile. Please refresh the page.</p>`;
+        }
+        
+        // Load Turnstile
+        window.onload = function() {
+            results.innerHTML = `<p>Loading Turnstile...</p>`;
+            
+            // Render the widget
+            setTimeout(() => {
+                if (window.turnstile) {
+                    window.turnstile.render('#turnstile', {
+                        sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
+                        callback: turnstileCallback,
+                        'expired-callback': turnstileExpired,
+                        'error-callback': turnstileError
+                    });
+                    results.innerHTML = `<p>Turnstile loaded. Please solve the captcha.</p>`;
+                } else {
+                    results.innerHTML = `<p>Error: Turnstile not loaded. Please check console for errors.</p>`;
+                }
+            }, 1000);
+        };
+        
+        // Add click event to verify button
+        verifyBtn.addEventListener('click', async () => {
+            if (!token) {
+                results.innerHTML = `<p>No token available. Please solve the captcha first.</p>`;
+                return;
+            }
+            
+            verifyBtn.disabled = true;
+            verifyBtn.textContent = 'Verifying...';
+            results.innerHTML = `<p>Sending token to server for verification...</p>`;
+            
+            try {
+                // Get the base URL
+                const baseUrl = window.location.origin;
+                const verifyUrl = `${baseUrl}/verify-turnstile`;
+                
+                results.innerHTML += `<p>Sending request to: ${verifyUrl}</p>`;
+                
+                // Send the token to the server
+                const response = await fetch(verifyUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ token })
+                });
+                
+                // Parse the response
+                const data = await response.json();
+                
+                results.innerHTML += `<p>Verification response:</p><pre>${JSON.stringify(data, null, 2)}</pre>`;
+                
+                if (data.success) {
+                    results.innerHTML += `<p style="color: green;">Verification successful!</p>`;
+                } else {
+                    results.innerHTML += `<p style="color: red;">Verification failed: ${data.message || 'Unknown error'}</p>`;
+                    if (data.errors) {
+                        results.innerHTML += `<p>Errors: ${data.errors.join(', ')}</p>`;
+                    }
+                }
+            } catch (error) {
+                results.innerHTML += `<p style="color: red;">Error: ${error.message}</p>`;
+                console.error('Verification error:', error);
+            }
+            
+            // Reset button
+            verifyBtn.disabled = false;
+            verifyBtn.textContent = 'Verify Token';
+        });
+    </script>
+    
+    <!-- Load Turnstile JS -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</body>
+</html> 

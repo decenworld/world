@@ -8,6 +8,9 @@ const fetch = require('node-fetch');
 const app = express();
 const server = http.createServer(app);
 
+// Check if we're in development mode
+const isDevelopment = process.env.NODE_ENV === 'development' || !process.env.NODE_ENV;
+
 // Configure port for Railway compatibility
 const PORT = process.env.PORT || 3000;
 // Get Cloudflare Turnstile Secret Key from env
@@ -42,15 +45,43 @@ app.get('/health', (req, res) => {
 // Endpoint to verify Cloudflare Turnstile
 app.post('/verify-turnstile', async (req, res) => {
   try {
+    console.log('Received verify-turnstile request:', req.body);
     const { token } = req.body;
     
     if (!token) {
+      console.log('Token is missing in request');
       return res.status(400).json({ success: false, message: 'Token is missing' });
     }
     
+    // Development mode bypass for testing
+    if (isDevelopment && !TURNSTILE_SECRET_KEY) {
+      console.log('DEVELOPMENT MODE: Bypassing Turnstile verification');
+      return res.json({ 
+        success: true, 
+        message: 'Development mode: verification bypassed' 
+      });
+    }
+    
+    if (!TURNSTILE_SECRET_KEY) {
+      console.error('TURNSTILE_SECRET_KEY is not set in environment variables');
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Server configuration error: TURNSTILE_SECRET_KEY is not set' 
+      });
+    }
+    
+    // Add client IP (Cloudflare may use this for additional verification)
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    console.log(`Client IP for verification: ${ip}`);
+    
+    // Create form data for Cloudflare verification
     const formData = new URLSearchParams();
     formData.append('secret', TURNSTILE_SECRET_KEY);
     formData.append('response', token);
+    formData.append('remoteip', ip); // Add the client IP
+    
+    console.log('Sending verification request to Cloudflare');
+    console.log(`Using secret key length: ${TURNSTILE_SECRET_KEY.length} characters`);
     
     const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
       method: 'POST',
@@ -60,16 +91,31 @@ app.post('/verify-turnstile', async (req, res) => {
       }
     });
     
+    if (!response.ok) {
+      console.error(`Cloudflare responded with status: ${response.status}`);
+      return res.status(500).json({ 
+        success: false, 
+        message: `Cloudflare verification failed with status: ${response.status}` 
+      });
+    }
+    
     const data = await response.json();
+    console.log('Cloudflare verification response:', data);
     
     if (data.success) {
+      console.log('Captcha verification successful');
       return res.json({ success: true });
     } else {
-      return res.status(400).json({ success: false, message: 'Captcha verification failed', errors: data['error-codes'] });
+      console.error('Captcha verification failed:', data['error-codes']);
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Captcha verification failed', 
+        errors: data['error-codes'] 
+      });
     }
   } catch (error) {
-    console.error('Error verifying turnstile:', error);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Error verifying turnstile:', error.message, error.stack);
+    return res.status(500).json({ success: false, message: 'Server error: ' + error.message });
   }
 });
 
@@ -356,7 +402,12 @@ server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
     console.log(`WebSocket server ready at ws://localhost:${PORT}`);
     if (!TURNSTILE_SECRET_KEY) {
-      console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set. Cloudflare Turnstile captcha verification will not work.');
+      console.warn('WARNING: TURNSTILE_SECRET_KEY environment variable is not set.');
+      if (isDevelopment) {
+        console.warn('Running in development mode: Captcha verification will be bypassed for testing.');
+      } else {
+        console.warn('Cloudflare Turnstile captcha verification will not work correctly.');
+      }
       console.warn('Please set the TURNSTILE_SECRET_KEY environment variable in your Railway environment variables.');
     } else {
       console.log('Cloudflare Turnstile is configured and ready.');

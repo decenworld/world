@@ -1095,11 +1095,10 @@ function showLoginScreen() {
 
     // Create captcha container
     const captchaContainer = document.createElement('div');
-    captchaContainer.id = 'captcha-container';
+    captchaContainer.id = 'cf-turnstile';
     captchaContainer.style.marginBottom = '20px';
-    captchaContainer.className = 'cf-turnstile';
-    captchaContainer.dataset.sitekey = '0x4AAAAAABCEsgftQ0R1Rv3F';
-    captchaContainer.dataset.theme = 'light';
+    captchaContainer.style.display = 'flex';
+    captchaContainer.style.justifyContent = 'center';
     
     // Create error message element
     const errorMessage = document.createElement('div');
@@ -1118,6 +1117,9 @@ function showLoginScreen() {
     loginButton.style.borderRadius = '5px';
     loginButton.style.cursor = 'pointer';
     
+    // Variable to store captcha token
+    let captchaToken = null;
+    
     // Add click event to login button
     loginButton.addEventListener('click', async () => {
         const username = usernameInput.value.trim();
@@ -1127,9 +1129,8 @@ function showLoginScreen() {
             return;
         }
         
-        // Get turnstile token
-        const token = document.querySelector('[name="cf-turnstile-response"]')?.value;
-        if (!token) {
+        // Check if captcha is completed
+        if (!captchaToken) {
             errorMessage.textContent = 'Please complete the captcha';
             errorMessage.style.display = 'block';
             return;
@@ -1139,50 +1140,89 @@ function showLoginScreen() {
         loginButton.disabled = true;
         loginButton.textContent = 'Verifying...';
         
-        try {
-            // Verify captcha on server
-            const response = await fetch('/verify-turnstile', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ token })
-            });
-            
-            const data = await response.json();
-            
-            if (data.success) {
-                // Save username to localStorage
-                localStorage.setItem('username', username);
+        let attempts = 0;
+        const maxAttempts = 2;
+        
+        const attemptVerification = async () => {
+            try {
+                console.log(`Verification attempt ${attempts + 1} with token: ${captchaToken.substring(0, 20)}...`);
+                // Get current URL location for building the correct verification URL
+                const baseUrl = window.location.origin;
+                const verifyUrl = `${baseUrl}/verify-turnstile`;
+                console.log('Sending verification to:', verifyUrl);
                 
-                // Remove login container
-                document.body.removeChild(loginContainer);
+                // Verify captcha on server
+                const response = await fetch(verifyUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ token: captchaToken }),
+                    credentials: 'same-origin'
+                });
                 
-                // Start the game
-                startGame(username);
-            } else {
-                // Show error
-                errorMessage.textContent = 'Captcha verification failed. Please try again.';
+                if (!response.ok) {
+                    const errorText = `Server responded with status: ${response.status}`;
+                    console.error(errorText);
+                    throw new Error(errorText);
+                }
+                
+                const data = await response.json();
+                console.log('Verification response:', data);
+                
+                if (data.success) {
+                    // Save username to localStorage
+                    localStorage.setItem('username', username);
+                    
+                    // Remove login container
+                    document.body.removeChild(loginContainer);
+                    
+                    // Start the game
+                    startGame(username);
+                } else {
+                    // Show detailed error
+                    let errorText = 'Captcha verification failed. Please try again.';
+                    if (data.errors && data.errors.length) {
+                        errorText += ' Error: ' + data.errors.join(', ');
+                    } else if (data.message) {
+                        errorText += ' ' + data.message;
+                    }
+                    throw new Error(errorText);
+                }
+            } catch (error) {
+                console.error('Error verifying captcha:', error);
+                
+                // Increment attempt counter
+                attempts++;
+                
+                if (attempts < maxAttempts) {
+                    console.log(`Retrying verification (attempt ${attempts + 1} of ${maxAttempts})`);
+                    // Wait a moment before retrying
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    return attemptVerification();
+                }
+                
+                // Show error message
+                errorMessage.textContent = error.message || 'There was an error verifying the captcha. Please try again.';
                 errorMessage.style.display = 'block';
+                
+                // Reset captcha token
+                captchaToken = null;
                 
                 // Reset captcha
                 if (window.turnstile) {
-                    window.turnstile.reset();
+                    window.turnstile.reset('#cf-turnstile');
                 }
                 
                 // Re-enable button
                 loginButton.disabled = false;
                 loginButton.textContent = 'Start Game';
             }
-        } catch (error) {
-            console.error('Error verifying captcha:', error);
-            errorMessage.textContent = 'There was an error verifying the captcha. Please try again.';
-            errorMessage.style.display = 'block';
-            
-            // Re-enable button
-            loginButton.disabled = false;
-            loginButton.textContent = 'Start Game';
-        }
+        };
+        
+        // Start verification process
+        await attemptVerification();
     });
     
     // Add keypress event to input field
@@ -1209,12 +1249,45 @@ function showLoginScreen() {
     usernameInput.focus();
     
     // Load Cloudflare Turnstile script
-    if (!document.querySelector('script[src="https://challenges.cloudflare.com/turnstile/v0/api.js"]')) {
+    if (!document.querySelector('script[src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback"]')) {
+        // Define the callback function
+        window.onloadTurnstileCallback = function () {
+            console.log('Turnstile loaded, rendering widget...');
+            window.turnstile.render('#cf-turnstile', {
+                sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
+                theme: 'light',
+                callback: function(token) {
+                    console.log('Captcha completed successfully');
+                    captchaToken = token;
+                    errorMessage.style.display = 'none';
+                },
+                'expired-callback': function() {
+                    console.log('Captcha expired');
+                    captchaToken = null;
+                }
+            });
+        };
+        
         const script = document.createElement('script');
-        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+        script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=onloadTurnstileCallback';
         script.async = true;
         script.defer = true;
         document.head.appendChild(script);
+    } else if (window.turnstile) {
+        // If the script is already loaded, render the widget directly
+        window.turnstile.render('#cf-turnstile', {
+            sitekey: '0x4AAAAAABCEsgftQ0R1Rv3F',
+            theme: 'light',
+            callback: function(token) {
+                console.log('Captcha completed successfully');
+                captchaToken = token;
+                errorMessage.style.display = 'none';
+            },
+            'expired-callback': function() {
+                console.log('Captcha expired');
+                captchaToken = null;
+            }
+        });
     }
 }
 

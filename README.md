@@ -113,12 +113,40 @@ This game uses Cloudflare Turnstile to protect the login screen with a CAPTCHA. 
 2. Set up your secret key:
    - Set the `TURNSTILE_SECRET_KEY` environment variable on your Railway deployment
    - This key is used by the server to verify CAPTCHA responses
+   - **⚠️ IMPORTANT:** The secret key must be kept private and should ONLY be set on the server
 
 3. If you need to use your own Turnstile keys:
    - Register at [Cloudflare Turnstile](https://www.cloudflare.com/products/turnstile/)
    - Create a new site and get your site key and secret key
    - Update the site key in `game.js` in the `showLoginScreen()` function
    - Update the secret key in your Railway environment variables
+
+### Testing Turnstile Locally
+
+When running locally, the application will automatically bypass Turnstile verification in development mode:
+
+1. Run the server in development mode:
+   ```bash
+   npm run dev
+   ```
+   
+2. The console will show a message indicating that Turnstile verification is being bypassed.
+
+3. You can also access a test page at `/turnstile-test.html` to verify your Turnstile integration.
+
+### Troubleshooting Turnstile
+
+If you're experiencing issues with Turnstile verification:
+
+1. Check server logs for verification errors
+2. Verify your secret key is correctly set in the environment variables
+3. Make sure the site key in the frontend code matches your Cloudflare Turnstile site key
+4. Test using the `/turnstile-test.html` page to isolate the issue
+5. Common errors:
+   - `missing-input-secret`: The secret key is missing
+   - `invalid-input-secret`: The secret key is invalid
+   - `timeout-or-duplicate`: The token has timed out or is a duplicate
+   - `sitekey-secret-mismatch`: The site key and secret key do not match
 
 ## Local Development
 
@@ -131,7 +159,7 @@ To run the game locally:
 
 2. Start the WebSocket server:
    ```bash
-   node server.js
+   npm run dev
    ```
 
 3. Open your browser to http://localhost:3000
